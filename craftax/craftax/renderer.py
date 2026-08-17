@@ -198,8 +198,34 @@ def render_craftax_symbolic(state: EnvState):
     return all_flattened
 
 
+_EXTRA_TEXTURE_CACHE = {}
+
+
+def _get_textures_for_size(block_pixel_size: int):
+    """返回指定尺寸的纹理集。
+
+    预构建缓存（load_all_textures）只含 AGENT/IMG/HUMAN 三个尺寸；
+    其余任意尺寸（如 720p 的 64、240p 的 18）按需生成并进程内缓存，
+    避免污染 texture_cache.pbz2（缓存文件仅含默认尺寸）。
+    """
+    all_textures = load_all_textures()
+    if block_pixel_size in all_textures:
+        return all_textures[block_pixel_size]
+    textures = _EXTRA_TEXTURE_CACHE.get(block_pixel_size)
+    if textures is None:
+        from craftax.craftax.constants import load_all_textures_given_size
+
+        print(
+            f"Generating textures for block_pixel_size={block_pixel_size} "
+            f"(one-time, kept in memory)."
+        )
+        textures = load_all_textures_given_size(block_pixel_size)
+        _EXTRA_TEXTURE_CACHE[block_pixel_size] = textures
+    return textures
+
+
 def make_craftax_pixel_renderer(block_pixel_size, do_night_noise=True):
-    textures = load_all_textures()[block_pixel_size]
+    textures = _get_textures_for_size(block_pixel_size)
 
     def render_craftax_pixels(state):
         obs_dim_array = jnp.array([OBS_DIM[0], OBS_DIM[1]], dtype=jnp.int32)

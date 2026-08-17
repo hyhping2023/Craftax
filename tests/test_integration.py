@@ -350,8 +350,8 @@ def test_gui_headless_connects_real_http(http_server: str):
         assert steps == 1
         assert gui.driver.revision == 1
         assert gui._snapshot is not None and gui._snapshot.timestep == 1
-        # 渲染路径（PNG 解码 → 场景画布）无异常
-        assert gui._frame_rgb is not None and gui._frame_rgb.shape == (130, 110, 3)
+        # 渲染路径（PNG 解码 → 场景画布）无异常；mode="human" 默认 16px/格（176x208）
+        assert gui._frame_rgb is not None and gui._frame_rgb.shape == (208, 176, 3)
 
         # GET /state 轮询端点
         snap = gui.driver.get_snapshot()

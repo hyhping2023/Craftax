@@ -54,10 +54,16 @@ class RecordingModel(BaseModel):
 
 
 class RenderModel(BaseModel):
-    """帧返回方式。format: "png" | "rgb"；mode: "human" | "agent"。"""
+    """帧返回方式。
+
+    format: "png" | "rgb"；mode: "human" | "agent"（决定默认方块像素尺寸）。
+    block_pixel_size 显式覆盖方块像素尺寸：10 = agent(110x130)、16 = human(176x208)、
+    18 ≈ 240p(198x234)。None 时按 mode 取默认值。
+    """
 
     format: str = "png"
     mode: str = "human"
+    block_pixel_size: Optional[int] = None
 
 
 class SessionCreateRequest(BaseModel):

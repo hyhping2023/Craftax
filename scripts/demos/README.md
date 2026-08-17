@@ -34,11 +34,19 @@ python scripts/demos/demo_api.py --save-frames --steps 5   # 保存每步 PNG �
 ## 3. 数据录制
 
 ```bash
+# demo 高清（默认 64px/格 ≈ 720p，704x832）
 python scripts/demos/demo_record.py --steps 40 --seed 2026 --task native.collect_wood
+
+# 真实批量录制：240p（18px/格，198x234），存储节省约 13 倍
+python scripts/demos/demo_record.py --steps 40 --block-pixel-size 18
 ```
 
 随机策略录制一个 episode（40 步），DELETE 会话触发异步封存，
 自动运行 validators 校验时间轴不变量。输出 `data/spool/<run-id>/` 下的 sealed shard。
+
+**分辨率策略**：demo/演示用高分辨率（`--block-pixel-size 64`），
+正式数据采集按 240p（`--block-pixel-size 18`）录制以控制存储成本；
+两者都通过 `render.block_pixel_size` 配置，训练时按固定分辨率消费。
 
 ## 4. 数据集读取与样本导出
 

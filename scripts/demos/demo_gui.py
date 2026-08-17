@@ -25,6 +25,8 @@ def main() -> None:
     parser.add_argument("--embedded", action="store_true",
                         help="同进程 embedded 模式（不连接服务）")
     parser.add_argument("--env", default="Craftax-Pixels-v1")
+    parser.add_argument("--block-pixel-size", type=int, default=64,
+                        help="服务端渲染方块像素尺寸：64 ≈ 720p(704x832)")
     parser.add_argument("--fps", type=int, default=20)
     args = parser.parse_args()
 
@@ -50,8 +52,14 @@ def main() -> None:
         print("[embedded] 直接使用本地 SessionActor，无需服务")
         gui.run()
     else:
-        gui = PygameGUI.connect_http(args.base, env_name=args.env, fps=args.fps)
-        print(f"[remote] 连接 {args.base} (env={args.env})")
+        gui = PygameGUI.connect_http(
+            args.base,
+            env_name=args.env,
+            fps=args.fps,
+            block_pixel_size=args.block_pixel_size,
+        )
+        print(f"[remote] 连接 {args.base} (env={args.env}, "
+              f"block_pixel_size={args.block_pixel_size})")
         gui.run()
 
 

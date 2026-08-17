@@ -61,11 +61,13 @@ class HttpSessionDriver:
         seed: Optional[int] = None,
         recording: Optional[Dict] = None,
         session_id: Optional[str] = None,
+        block_pixel_size: Optional[int] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.env_name = env_name
         self.seed = seed
         self.recording = recording or {}
+        self.block_pixel_size = block_pixel_size
         self._session_id = session_id
         self._revision = -1
         self._last_snapshot: Optional[Snapshot] = None
@@ -84,7 +86,15 @@ class HttpSessionDriver:
         """POST /v1/sessions 创建会话，返回 revision 0 的 Snapshot。"""
         body: Dict = {
             "env_name": self.env_name,
-            "render": {"format": "png", "mode": "human"},
+            "render": {
+                "format": "png",
+                "mode": "human",
+                **(
+                    {"block_pixel_size": self.block_pixel_size}
+                    if self.block_pixel_size is not None
+                    else {}
+                ),
+            },
         }
         if self.seed is not None:
             body["seed"] = self.seed
@@ -328,10 +338,15 @@ class PygameGUI:
         env_name: str = "Craftax-Pixels-v1",
         seed: Optional[int] = None,
         recording: Optional[Dict] = None,
+        block_pixel_size: Optional[int] = None,
     ) -> "PygameGUI":
         """连接远程 service，创建会话并返回就绪的 GUI。"""
         driver = HttpSessionDriver(
-            base_url, env_name=env_name, seed=seed, recording=recording
+            base_url,
+            env_name=env_name,
+            seed=seed,
+            recording=recording,
+            block_pixel_size=block_pixel_size,
         )
         gui = cls(driver, title=title, fps=fps, pixel_render_size=pixel_render_size)
         gui._on_snapshot(driver.create_session())

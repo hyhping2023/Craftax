@@ -44,6 +44,8 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--task", default="native.survive")
+    parser.add_argument("--block-pixel-size", type=int, default=64,
+                        help="方块像素尺寸：64 ≈ 720p(704x832)；真实录制建议 18 ≈ 240p")
     parser.add_argument("--save-frames", action="store_true",
                         help="把每步 PNG 帧保存到 data/demo_frames/")
     args = parser.parse_args()
@@ -65,7 +67,8 @@ def main() -> None:
             "env_name": args.env,
             "seed": args.seed,
             "task": {"task_id": args.task, "version": "1.0.0"},
-            "render": {"format": "png", "mode": "human"},
+            "render": {"format": "png", "mode": "human",
+                       "block_pixel_size": args.block_pixel_size},
         },
     )
     sid = resp["session_id"]

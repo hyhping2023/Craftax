@@ -269,6 +269,7 @@ class SessionActor:
         self._render_cfg = render
         self._recording_cfg = recording
         self._is_pixels = env_name == "Craftax-Pixels-v1"
+        self._block_pixel_size = self._resolve_block_pixel_size(render)
 
         self._lock = threading.Lock()
 
@@ -571,17 +572,27 @@ class SessionActor:
     # -- 渲染 / 摘要 ---------------------------------------------------------
 
     def _render_frame(self, host_obs: Any, state: Any) -> np.ndarray:
-        """生成 uint8 HWC RGB 帧。Pixels 用环境自带 obs；Symbolic 用像素 renderer。"""
-        if self._is_pixels:
-            arr = np.asarray(host_obs, dtype=np.float32)
-            return np.clip(np.round(arr * 255.0), 0, 255).astype(np.uint8)
+        """生成 uint8 HWC RGB 帧，分辨率由 block_pixel_size 决定。
 
-        from craftax.craftax.constants import BLOCK_PIXEL_SIZE_AGENT
-
-        renderer = _get_pixel_renderer(BLOCK_PIXEL_SIZE_AGENT)
+        对所有环境统一使用参数化像素 renderer（Pixels 环境的 obs 本身也是
+        renderer 的输出，统一后分辨率完全可控）。
+        """
+        renderer = _get_pixel_renderer(self._block_pixel_size)
         pixels = renderer(state)
         arr = np.asarray(jax.device_get(pixels), dtype=np.float32)
         return np.clip(np.round(arr), 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _resolve_block_pixel_size(render: Any) -> int:
+        """解析方块像素尺寸：显式 block_pixel_size > mode 默认（human=16, agent=10）。"""
+        explicit = getattr(render, "block_pixel_size", None)
+        if explicit is not None:
+            size = int(explicit)
+            if size <= 0:
+                raise ValueError(f"block_pixel_size 必须为正数，收到 {size}")
+            return size
+        mode = getattr(render, "mode", "human")
+        return 16 if mode == "human" else 10
 
     def _evaluate_and_summary(
         self, host_state: Any, info: Dict[str, Any]

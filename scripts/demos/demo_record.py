@@ -50,6 +50,9 @@ def main() -> None:
     parser.add_argument("--task-version", default="1.0.0")
     parser.add_argument("--run-id", default="demo-record")
     parser.add_argument("--gold-frames", action="store_true")
+    parser.add_argument("--block-pixel-size", type=int, default=64,
+                        help="方块像素尺寸：64 ≈ 720p(704x832) demo 高清；"
+                             "真实批量录制建议 18 ≈ 240p(198x234)")
     args = parser.parse_args()
 
     action_names = {a.value: a.name for a in Action}
@@ -69,6 +72,8 @@ def main() -> None:
             "env_name": args.env,
             "seed": args.seed,
             "task": {"task_id": args.task, "version": args.task_version},
+            "render": {"format": "png", "mode": "human",
+                       "block_pixel_size": args.block_pixel_size},
             "recording": {
                 "enabled": True,
                 "dataset_run_id": args.run_id,
