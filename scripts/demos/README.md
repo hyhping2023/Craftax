@@ -34,15 +34,19 @@ python scripts/demos/demo_api.py --save-frames --steps 5   # 保存每步 PNG �
 ## 3. 数据录制
 
 ```bash
-# demo 高清（默认 64px/格 ≈ 720p，704x832）
-python scripts/demos/demo_record.py --steps 40 --seed 2026 --task native.collect_wood
+# demo 高清（默认 64px/格 ≈ 720p，704x832）；启发式策略：移动+砍树，
+# collect_wood 任务约十几步真实完成，视频可见任务过程
+python scripts/demos/demo_record.py --steps 60 --seed 2026
 
 # 真实批量录制：240p（18px/格，198x234），存储节省约 13 倍
-python scripts/demos/demo_record.py --steps 40 --block-pixel-size 18
+python scripts/demos/demo_record.py --steps 60 --block-pixel-size 18
 ```
 
-随机策略录制一个 episode（40 步），DELETE 会话触发异步封存，
+随机策略录制一个 episode，DELETE 会话触发异步封存，
 自动运行 validators 校验时间轴不变量。输出 `data/spool/<run-id>/` 下的 sealed shard。
+
+> **注意**：不要使用 `--god-mode` 做任务演示——god_mode 会让玩家开局满背包
+> （99 木材+全套装备），收集类成就第 0 步即"达成"，任务演示失去意义。
 
 **分辨率策略**：demo/演示用高分辨率（`--block-pixel-size 64`），
 正式数据采集按 240p（`--block-pixel-size 18`）录制以控制存储成本；

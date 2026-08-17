@@ -44,12 +44,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="数据录制 demo")
     parser.add_argument("--base", default="http://127.0.0.1:8321")
     parser.add_argument("--env", default="Craftax-Pixels-v1")
-    parser.add_argument("--steps", type=int, default=40, help="max_timesteps（episode 长度）")
+    parser.add_argument("--steps", type=int, default=60, help="max_timesteps（episode 长度）")
     parser.add_argument("--seed", type=int, default=2026)
-    parser.add_argument("--task", default="native.collect_wood")
+    parser.add_argument("--task", default="native.collect_wood",
+                        help="collect_wood：启发式策略十几步内真实砍树完成（推荐演示）；"
+                             "explore_dungeon：进度按楼层，随机策略下通常不完成")
     parser.add_argument("--task-version", default="1.0.0")
     parser.add_argument("--run-id", default="demo-record")
     parser.add_argument("--gold-frames", action="store_true")
+    parser.add_argument("--god-mode", action="store_true",
+                        help="默认关闭：god_mode 会让玩家开局满背包（99 木材+全套装备），"
+                             "收集类成就第 0 步即达成，任务演示无意义")
     parser.add_argument("--block-pixel-size", type=int, default=64,
                         help="方块像素尺寸：64 ≈ 720p(704x832) demo 高清；"
                              "真实批量录制建议 18 ≈ 240p(198x234)")
@@ -59,9 +64,16 @@ def main() -> None:
     rng = random.Random(args.seed)
 
     def sample_action() -> int:
-        """移动优先的随机策略：60% 移动，40% 随机动作，保证演示画面在动。"""
-        if rng.random() < 0.6:
+        """启发式随机策略：40% 移动 + 40% DO(互动/砍树) + 20% 随机。
+
+        移动保证画面在动；DO 在树旁会真实砍树，收集类任务（collect_wood）
+        通常十几步内即可完成，演示能看到"完成任务"的过程。
+        """
+        r = rng.random()
+        if r < 0.4:
             return rng.choice((1, 2, 3, 4))  # LEFT/RIGHT/UP/DOWN
+        if r < 0.8:
+            return 5  # DO
         return rng.randint(1, len(Action) - 1)
 
     # 1. 创建带录制的会话
@@ -82,7 +94,7 @@ def main() -> None:
                 "spool_dir": str(PROJECT_ROOT / "data" / "spool"),
             },
             "max_timesteps": args.steps,
-            "god_mode": True,
+            "god_mode": args.god_mode,
         },
     )
     sid = resp["session_id"]
