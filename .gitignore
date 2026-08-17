@@ -5,6 +5,11 @@ runs/
 
 play_data
 
+# Embodied 数据集录制输出（scripts/record_demo.py 及录制管线生成）
+data/
+spool/
+*.mp4
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

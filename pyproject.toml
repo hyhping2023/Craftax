@@ -29,6 +29,18 @@ dependencies = [
 dev = [
     "ruff",
     "pre-commit",
+    "pytest",
+]
+server = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pillow",
+]
+dataset = [
+    "zarr",
+    "pyarrow",
+    "imageio",
+    "imageio-ffmpeg",
 ]
 
 [project.scripts]
