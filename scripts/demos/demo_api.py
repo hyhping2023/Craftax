@@ -51,6 +51,12 @@ def main() -> None:
     action_names = {a.value: a.name for a in Action}
     rng = random.Random(args.seed)
 
+    def sample_action() -> int:
+        """移动优先的随机策略：60% 移动，40% 随机动作，保证演示画面在动。"""
+        if rng.random() < 0.6:
+            return rng.choice((1, 2, 3, 4))  # LEFT/RIGHT/UP/DOWN
+        return rng.randint(1, len(Action) - 1)
+
     # 1. 创建会话（模型视角：一次 reset）
     resp = post(
         args.base,
@@ -76,7 +82,7 @@ def main() -> None:
 
     # 2. 循环交互（模型视角：obs -> action -> obs'）
     for t in range(args.steps):
-        action_id = rng.randint(1, len(Action) - 1)  # 排除 NOOP
+        action_id = sample_action()
         r = post(
             args.base,
             f"/v1/sessions/{sid}/step",
