@@ -46,6 +46,8 @@ def gear_from_summary(summary: Dict[str, Any], has_elemental: bool) -> Gear:
         dexterity=int(summary.get("dexterity", 1)),
         intelligence=int(summary.get("intelligence", 1)),
         has_elemental=has_elemental,
+        bow=int(inventory.get("bow", 0)),
+        bow_enchant=int(summary.get("bow_enchantment", 0)),
     )
 
 
@@ -87,10 +89,14 @@ def check_floor_readiness(
     sword = int(inventory.get("sword", 0))
     armour = sum(int(x) for x in inventory.get("armour", [0]))
     strength = int(summary.get("strength", 1))
+    # 弓（L1 首箱必出）覆盖 L1-L3 的清怪需求：箭 1-3 发/怪、0-1 受击，
+    # 不再强制剑/甲作为下楼前置（L4 起骑士/巨魔物免高，仍需剑/甲或附魔）。
+    has_bow = int(inventory.get("bow", 0)) >= 1
+    bow_covers_gear = has_bow and floor <= 3
 
-    if req.get("sword", 0) > sword:
+    if req.get("sword", 0) > sword and not bow_covers_gear:
         missing.append(("sword", req["sword"]))
-    if req.get("armour", 0) > armour:
+    if req.get("armour", 0) > armour and not bow_covers_gear:
         missing.append(("armour", req["armour"]))
     if req.get("strength", 1) > strength:
         missing.append(("strength", req["strength"]))

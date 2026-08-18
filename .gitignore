@@ -6,7 +6,10 @@ runs/
 play_data
 
 # Embodied 数据集录制输出（scripts/record_demo.py 及录制管线生成）
+# data 常为指向外部盘（如 /dockerdata/craftax-data）的符号链接——git 把 symlink
+# 当文件，`data/` 只匹配真目录，故同时用 `data`（无斜杠）匹配 symlink 条目。
 data/
+data
 spool/
 *.mp4
 

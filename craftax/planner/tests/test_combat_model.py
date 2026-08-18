@@ -9,7 +9,9 @@ from craftax.planner.combat_model import (
     Gear,
     awake_budget_steps,
     batches_for_clear,
+    bow_arrow_damage,
     damage_per_clear,
+    damage_per_clear_bow,
     damage_per_kill,
     effective_dps_vs_mob,
     elemental_dps,
@@ -24,6 +26,7 @@ from craftax.planner.combat_model import (
     recommend_tactic,
     survival_verdict,
     turns_to_kill,
+    turns_to_kill_bow,
 )
 
 
@@ -113,6 +116,78 @@ def test_recommend_tactic():
     assert recommend_tactic(1, g_strong) == "stand"
     g_weak = Gear(sword=2, armour=0, strength=1)
     assert recommend_tactic(2, g_weak) in ("stand", "kite")
+
+
+# ---------------------------------------------------------------------------
+# 弓模型（L1 首箱必出；箭伤 5 + 敏捷缩放，0-1 受击清怪）
+# ---------------------------------------------------------------------------
+
+
+def test_bow_arrow_damage():
+    # 箭伤 5 物理（dex1 无物免），随敏捷 +20%/点
+    assert bow_arrow_damage(1, 0.0) == pytest.approx(5.0)
+    assert bow_arrow_damage(2, 0.0) == pytest.approx(6.0)
+    assert bow_arrow_damage(5, 0.0) == pytest.approx(9.0)
+    # 物免衰减（L4 knight 50%）
+    assert bow_arrow_damage(1, 0.5) == pytest.approx(2.5)
+    # 附魔弓元素半伤不受物免：L4 任意附魔有效（5*0.5 + 2.5 = 5）
+    assert bow_arrow_damage(1, 0.5, bow_enchant=1) == pytest.approx(5.0)
+    # L6 元素层：正确元素（冰）生效（5*0.1 + 2.5 = 3）；错误/无元素被 90% 物免压制
+    assert bow_arrow_damage(1, 0.9, bow_enchant=2, elemental_required=True,
+                            has_elemental=True) == pytest.approx(3.0)
+    assert bow_arrow_damage(1, 0.9, bow_enchant=1, elemental_required=True,
+                            has_elemental=False) == pytest.approx(0.5)
+
+
+def test_bow_turns_to_kill():
+    g = Gear(sword=1, strength=1, bow=1)  # str1/dex1，无附魔
+    # L0 僵尸 5HP → 1 箭；L1 兽人 7HP → 2 箭；L2 侏儒 9HP → 2 箭；L3 蜥蜴 11HP → 3 箭
+    assert turns_to_kill_bow(5, g, 0.0) == 1.0
+    assert turns_to_kill_bow(7, g, 0.0) == 2.0
+    assert turns_to_kill_bow(9, g, 0.0) == 2.0
+    assert turns_to_kill_bow(11, g, 0.0) == 3.0
+    # L4 骑士 50% 物免：无附魔 5 箭；附魔弓（任意元素）3 箭
+    assert turns_to_kill_bow(12, g, 0.5) == 5.0
+    g_ench = Gear(sword=1, strength=1, bow=1, bow_enchant=1)
+    assert turns_to_kill_bow(12, g_ench, 0.5) == 3.0
+    # L6 猪人 90% 物免：无元素箭伤仅 0.5/箭 → 40 箭（慢但非 0）；冰弓 7 箭
+    assert turns_to_kill_bow(20, g, 0.9, elemental_required=True) == 40.0
+    g_ice = Gear(sword=1, strength=1, bow=1, bow_enchant=2, has_elemental=True)
+    assert turns_to_kill_bow(20, g_ice, 0.9, elemental_required=True) == 7.0
+
+
+def test_bow_survival_verdict():
+    # 弓让 L1/L2 直接 CLEARABLE（无需剑/甲）；L3 蜥蜴伤高 → CLEARABLE/MARGINAL
+    g_bow = Gear(sword=0, armour=0, strength=1, bow=1)
+    assert survival_verdict(1, g_bow) == "CLEARABLE"
+    assert survival_verdict(2, g_bow) == "CLEARABLE"
+    assert survival_verdict(3, g_bow) in ("CLEARABLE", "MARGINAL")
+    # L4 骑士物免：无附魔弓 MARGINAL；附魔弓 3 箭/怪、无甲仍 MARGINAL（骑士 6 伤/击）
+    # —— 不 INFEASIBLE 即可，护甲/锚点恢复兜底（对应 FLOOR_GEAR_REQ L4 需甲）
+    assert survival_verdict(4, g_bow) == "MARGINAL"
+    g_ench = Gear(sword=0, armour=0, strength=1, bow=1, bow_enchant=1)
+    assert survival_verdict(4, g_ench) != "INFEASIBLE"
+    assert survival_verdict(4, g_ench) in ("CLEARABLE", "MARGINAL")
+    # L6/L7 无元素 → 弓也 INFEASIBLE
+    assert survival_verdict(6, g_bow) == "INFEASIBLE"
+
+
+def test_bow_recommend_tactic():
+    # 有弓 + 弓不劣于近战 → bow 战术
+    g_bow = Gear(sword=1, armour=0, strength=1, bow=1)
+    assert recommend_tactic(1, g_bow) == "bow"
+    # 弓 + 高近战装备：L4 无附魔弓不如近战 → 不用 bow
+    g_strong = Gear(sword=3, armour=2, strength=3, bow=1)
+    assert recommend_tactic(4, g_strong) != "bow"
+    # 无弓 → 不进 bow 分支
+    assert recommend_tactic(1, Gear(sword=1)) in ("stand", "kite")
+
+
+def test_bow_damage_per_clear_positive():
+    g_bow = Gear(sword=0, armour=0, strength=1, bow=1)
+    for f in (0, 1, 2, 3):
+        assert damage_per_clear_bow(f, g_bow) > 0
+        assert damage_per_clear_bow(f, g_bow) <= damage_per_clear(f, Gear(sword=1, strength=1))
 
 
 def test_max_health_energy():

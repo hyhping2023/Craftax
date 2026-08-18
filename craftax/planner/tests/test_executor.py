@@ -18,6 +18,9 @@ from craftax.craftax.envs.craftax_symbolic_env import (  # noqa: E402
 from craftax.planner.executor import (  # noqa: E402
     LEVEL_UP_DEXTERITY,
     LEVEL_UP_STRENGTH,
+    MAKE_WOOD_PICKAXE,
+    NOOP,
+    PLACE_TABLE,
     SkillChainExecutor,
 )
 
@@ -65,7 +68,12 @@ def _summary(hs):
         "drink": float(hs.player_drink),
         "health": float(hs.player_health),
         "mana": float(hs.player_mana),
+        "xp": int(hs.player_xp),
+        "strength": int(hs.player_strength),
+        "dexterity": int(hs.player_dexterity),
+        "intelligence": int(hs.player_intelligence),
         "is_sleeping": bool(hs.is_sleeping),
+        "is_resting": bool(hs.is_resting),
         "sword_enchantment": int(hs.sword_enchantment),
         "bow_enchantment": int(hs.bow_enchantment),
         "armour_enchantments": [int(x) for x in np.asarray(hs.armour_enchantments).ravel()],
@@ -202,6 +210,85 @@ def test_executor_chain_has_dependencies_first():
     # 依赖在前：collect_wood 必须先于 craft_wood_pickaxe
     assert chain.index("native.collect_wood") < chain.index("native.craft_wood_pickaxe")
     assert chain.index("native.craft_wood_pickaxe") < chain.index("native.collect_coal")
+
+
+def test_should_use_bow():
+    """弓主战判定：有弓时 L0-L5 用弓；L6/L7 需元素能力。"""
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ_bow = {"inventory": {"bow": 1}}
+    summ_nobow = {"inventory": {"bow": 0}}
+    assert ex._should_use_bow(1, summ_bow) is True
+    assert ex._should_use_bow(0, summ_bow) is True
+    assert ex._should_use_bow(5, summ_bow) is True
+    assert ex._should_use_bow(1, summ_nobow) is False
+    # L6 需冰系能力
+    assert ex._should_use_bow(6, summ_bow) is False
+    assert ex._should_use_bow(
+        6, {"inventory": {"bow": 1}, "learned_spells": [False, True],
+            "sword_enchantment": 0, "bow_enchantment": 0}
+    ) is True
+
+
+def test_line_clear():
+    """直线射检查：中间无 solid 阻挡才射；target 本身是怪格不算阻挡。"""
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    # 3x3 全草地：从 (0,0) 到 (0,2) 无障碍
+    assert ex._line_clear([[2, 2, 2], [2, 2, 2], [2, 2, 2]], (0, 0), (0, 2)) is True
+    # 中间是 STONE(4)：被挡
+    assert ex._line_clear([[2, 4, 2], [2, 2, 2], [2, 2, 2]], (0, 0), (0, 2)) is False
+    # WATER(3) 也挡（箭可过水，但保守不射）
+    assert ex._line_clear([[2, 3, 2], [2, 2, 2], [2, 2, 2]], (0, 0), (0, 2)) is False
+
+
+def test_collect_resource_checks_pickaxe():
+    """采集目标需要更高镐时先合成（修复：无镐挖石会卡死）。"""
+    ex = SkillChainExecutor("native.collect_diamond")
+    # 石头需木镐：无镐 → 返回合成木镐的动作
+    map2d = np.zeros((4, 4), dtype=np.int32) + 2  # 全草地
+    map2d[1][1] = 4  # STONE
+    payload = {
+        "map": map2d,
+        "player_position": [0, 0],
+        "player_direction": 2,
+        "mob_positions": {"melee": {"positions": [], "masks": []},
+                          "ranged": {"positions": [], "masks": []},
+                          "passive": {"positions": [], "masks": []}},
+        "monsters_killed": 10,
+    }
+    summ = {"floor": 0, "player_position": [0, 0], "player_direction": 2,
+            "inventory": {"wood": 2, "stone": 0, "pickaxe": 0, "sword": 1,
+                          "bow": 0, "arrows": 0, "armour": [0, 0, 0, 0]}}
+    a = ex._collect_resource("native.collect_stone", payload, summ)
+    # 先做木镐：无台子先放台（PLACE_TABLE），有台则直接 MAKE_WOOD_PICKAXE
+    assert a in (PLACE_TABLE, MAKE_WOOD_PICKAXE)
+
+
+def test_bow_rush_starts_with_sword_then_descends():
+    """弓先制：无弓时先保证木剑，再下 L1（L0 已清无杀怪门槛）。"""
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    map2d = np.zeros((5, 5), dtype=np.int32) + 2  # 全草地
+    map2d[1][1] = 5  # TREE
+    # 有 ladder_down 在 (4,4)
+    payload = {
+        "map": map2d,
+        "player_position": [0, 0],
+        "player_direction": 2,
+        "mob_positions": {"melee": {"positions": [], "masks": []},
+                          "ranged": {"positions": [], "masks": []},
+                          "passive": {"positions": [], "masks": []}},
+        "ladder_down": [4, 4],
+        "monsters_killed": 10,
+    }
+    summ = {"floor": 0, "player_position": [0, 0], "player_direction": 2,
+            "inventory": {"wood": 0, "stone": 0, "pickaxe": 0, "sword": 0,
+                          "bow": 0, "arrows": 0, "armour": [0, 0, 0, 0]}}
+    # 无木 → 先采木
+    a = ex._bow_rush(payload, summ)
+    assert a is not None
+    assert a != NOOP
+    # 有弓 → 不触发弓先制
+    summ["inventory"]["bow"] = 1
+    assert ex._bow_rush(payload, summ) is None
 
 
 def test_enter_dungeon_fast():

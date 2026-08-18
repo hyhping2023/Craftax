@@ -52,6 +52,11 @@ SPELL_BASE_DAMAGE = 3.0            # 火球/冰球基础 3
 INT_SPELL_PER_POINT = 0.5          # 法术随智力 +50%/点
 MAX_ATTRIBUTE = 5
 
+# 弓（L1 首箱必出，定位为"0-1 受击清怪"的核心武器）
+BOW_ARROW_DAMAGE = 5.0             # ARROW2 基础物伤（MOB_TYPE_DAMAGE_MAPPING[4, PROJECTILE]）
+BOW_DAMAGE_PER_DEX = 0.2           # 箭伤随敏捷 +20%/点
+BOW_ELEMENTAL_FRACTION = 0.5       # 附魔弓元素半伤（不受物免；对正确元素防御为 0）
+
 MAX_HEALTH_BASE = 8.0
 HEALTH_PER_STRENGTH = 1.0
 MAX_ENERGY_BASE = 7.0
@@ -82,6 +87,8 @@ class Gear:
     dexterity: int = 1
     intelligence: int = 1
     has_elemental: bool = False     # 对 L6/7：剑/弓附魔或对应法术已具备
+    bow: int = 0                    # 弓等级（0=无弓；1=已有弓）
+    bow_enchant: int = 0            # 弓附魔（0=无；1=火；2=冰；L6 需冰、L7 需火）
 
 
 # ---------------------------------------------------------------------------
@@ -207,11 +214,104 @@ def estimated_steps(floor: int, gear: Gear, tactic: str = "stand") -> float:
     return CLEAR_TARGET * avg_turns + batches * BATCH_STEPS_OVERHEAD
 
 
+# ---------------------------------------------------------------------------
+# 弓战斗模型（L1 首箱必出弓；箭伤 5 + 敏捷缩放，点射 0-1 受击清怪）
+# ---------------------------------------------------------------------------
+
+
+def bow_arrow_damage(
+    dexterity: int,
+    phys_def: float,
+    bow_enchant: int = 0,
+    elemental_required: bool = False,
+    has_elemental: bool = False,
+) -> float:
+    """单支箭对某怪的等效伤害。
+
+    - 物伤 = 5 × (1+0.2×(dex-1)) × (1-物免)；
+    - 附魔弓（fire/ice）额外元素半伤，不受物免；
+      L6/L7（elemental_required=True）需对应元素才生效（has_elemental 语义：
+       L6 需冰、L7 需火），其余层任意附魔均有效。
+    """
+    base = BOW_ARROW_DAMAGE * (1.0 + BOW_DAMAGE_PER_DEX * (dexterity - 1))
+    phys = base * (1.0 - phys_def)
+    if bow_enchant > 0 and (not elemental_required or has_elemental):
+        phys += base * BOW_ELEMENTAL_FRACTION
+    return phys
+
+
+def turns_to_kill_bow(
+    hp: float,
+    gear: Gear,
+    phys_def: float,
+    elemental_required: bool = False,
+) -> float:
+    """用弓击杀某怪所需箭数（打不动返回 999）。"""
+    dmg = bow_arrow_damage(
+        gear.dexterity, phys_def, gear.bow_enchant, elemental_required, gear.has_elemental
+    )
+    if dmg <= 0.0:
+        return 999.0
+    # 小 epsilon 避免浮点边界（如 0.4999... 导致 20/0.5 算出 41）
+    return max(1.0, math.ceil(hp / dmg - 1e-9))
+
+
+def damage_per_kill_bow(floor: int, gear: Gear, tactic: str = "stand") -> float:
+    """弓清层时平均击杀 1 怪受到的伤害（近战/远程等权混合）。"""
+    melee_dmg, melee_hp, mdef, ranged_dmg, ranged_hp, rdef, requires_elem = MOB_STATS[floor]
+    elem_floor = floor in (6, 7)
+
+    def _mob(hp: float, dmg: float, phys_def: float) -> float:
+        turns = turns_to_kill_bow(hp, gear, phys_def, elemental_required=elem_floor)
+        hits = hits_per_kill(turns, tactic)
+        return hits * dmg
+
+    armor_reduction = ARMOR_REDUCTION_PER_PIECE * gear.armour
+    melee_in = _mob(melee_hp, melee_dmg, mdef)
+    ranged_in = _mob(ranged_hp, ranged_dmg, rdef)
+    avg = (5.0 * melee_in + 3.0 * ranged_in) / 8.0
+    return avg * (1.0 - armor_reduction)
+
+
+def damage_per_clear_bow(floor: int, gear: Gear, tactic: str = "stand") -> float:
+    """弓清满 8 怪的期望累计伤害。"""
+    return CLEAR_TARGET * damage_per_kill_bow(floor, gear, tactic)
+
+
+def mobs_per_batch_bow(floor: int, gear: Gear, tactic: str = "stand") -> float:
+    """弓清层时每次恢复前可击杀的怪数。"""
+    mh = max_health(gear.strength)
+    usable = max(1.0, mh - BATCH_ABORT_HEALTH)
+    dmg = damage_per_kill_bow(floor, gear, tactic)
+    if dmg <= 0.0:
+        return CLEAR_TARGET + 1.0
+    return max(1.0, usable / dmg)
+
+
+def batches_for_clear_bow(floor: int, gear: Gear, tactic: str = "stand") -> int:
+    return max(1, int(math.ceil(CLEAR_TARGET / mobs_per_batch_bow(floor, gear, tactic))))
+
+
+def estimated_steps_bow(floor: int, gear: Gear, tactic: str = "stand") -> float:
+    """弓清完本层 8 怪的期望步数（含每批往返开销）。"""
+    melee_dmg, melee_hp, mdef, ranged_dmg, ranged_hp, rdef, requires_elem = MOB_STATS[floor]
+    elem_floor = floor in (6, 7)
+
+    def _mob_turns(hp: float, phys_def: float) -> float:
+        return turns_to_kill_bow(hp, gear, phys_def, elemental_required=elem_floor) \
+            + STEPS_PER_KILL_APPROACH
+
+    avg_turns = (
+        5.0 * _mob_turns(melee_hp, mdef)
+        + 3.0 * _mob_turns(ranged_hp, rdef)
+    ) / 8.0
+    batches = batches_for_clear_bow(floor, gear, tactic)
+    return CLEAR_TARGET * avg_turns + batches * BATCH_STEPS_OVERHEAD
+
+
 def energy_consumed(steps: float, dexterity: int) -> float:
     """清醒 steps 步消耗的能量（每 ~31 步 1 点，随敏捷减缓）。"""
     return steps / (ENERGY_STEPS_PER_POINT / energy_decay_factor(dexterity))
-
-
 def awake_budget_steps(dexterity: int) -> float:
     """当前敏捷下"从满能量到耗尽"可支撑的清醒步数。
 
@@ -250,7 +350,12 @@ def survival_verdict(floor: int, gear: Gear, tactic: str = "stand") -> str:
     - MARGINAL：清层所需能量超过当前能量预算的 2 倍（需多次回上层恢复）或
       单怪伤害已接近中止血量（每次只能清 1-2 只，耗时过长）。
     - CLEARABLE：其余。
+
+    有弓（gear.bow>=1）时改用弓模型：L1-L3 箭 1-3 发即可击杀，
+    L4 骑士/ L5 巨魔靠物免衰减箭伤（需附魔/近战配合），L6/L7 仍需元素能力。
     """
+    if gear.bow >= 1:
+        return _survival_verdict_bow(floor, gear, tactic)
     if floor in (6, 7) and not gear.has_elemental:
         return "INFEASIBLE"
     melee_dmg, melee_hp, mdef, ranged_dmg, ranged_hp, rdef, requires_elem = MOB_STATS[floor]
@@ -285,12 +390,47 @@ def survival_verdict(floor: int, gear: Gear, tactic: str = "stand") -> str:
     return "CLEARABLE"
 
 
-def recommend_tactic(floor: int, gear: Gear) -> str:
-    """选择受击更小的战术：stand（贴脸速杀）vs kite（命中后拉开）。
+def _survival_verdict_bow(floor: int, gear: Gear, tactic: str = "stand") -> str:
+    """弓模型下的清层可行性判定（结构同近战判定）。"""
+    if floor in (6, 7) and not gear.has_elemental:
+        return "INFEASIBLE"
+    melee_dmg, melee_hp, mdef, ranged_dmg, ranged_hp, rdef, requires_elem = MOB_STATS[floor]
+    elem_floor = floor in (6, 7)
 
-    风筝只显著降低"慢速击杀"的后续命中；速杀（1-2 回合）时差距很小，
-    仅在风筝受击 < stand x 0.9 时切换。
+    max_turns = max(
+        turns_to_kill_bow(melee_hp, gear, mdef, elemental_required=elem_floor),
+        turns_to_kill_bow(ranged_hp, gear, rdef, elemental_required=elem_floor),
+    )
+    if max_turns >= 999.0:
+        return "INFEASIBLE"
+
+    mh = max_health(gear.strength)
+    armor_reduction = ARMOR_REDUCTION_PER_PIECE * gear.armour
+    worst_hit = max(melee_dmg, ranged_dmg) * (1.0 - armor_reduction)
+    if worst_hit >= mh:
+        return "INFEASIBLE"
+    dmg_per_kill = damage_per_kill_bow(floor, gear, tactic)
+    usable = max(1.0, mh - BATCH_ABORT_HEALTH)
+    if dmg_per_kill >= usable and dmg_per_kill >= 0.75 * mh:
+        return "MARGINAL"
+    steps = estimated_steps_bow(floor, gear, tactic)
+    energy = energy_consumed(steps, gear.dexterity)
+    if energy > 2.0 * max_energy(gear.dexterity):
+        return "MARGINAL"
+    return "CLEARABLE"
+
+
+def recommend_tactic(floor: int, gear: Gear) -> str:
+    """选择受击更小的战术：bow（远程点射）/ kite（风筝）/ stand（贴脸速杀）。
+
+    有弓且弓清层受击不显著劣于近战时优先 bow——弓把 L1-L3 清怪从 2-3 受击
+    降到 0-1 受击，是打破 L0 制备生存墙的核心武器。
     """
+    if gear.bow >= 1:
+        bow_dmg = damage_per_clear_bow(floor, gear, "stand")
+        melee_dmg = damage_per_clear(floor, gear, "stand")
+        if bow_dmg <= melee_dmg * 1.1:
+            return "bow"
     stand = damage_per_kill(floor, gear, "stand")
     kite = damage_per_kill(floor, gear, "kite")
     if kite < stand * 0.9:
