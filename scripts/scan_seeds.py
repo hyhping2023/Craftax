@@ -14,6 +14,8 @@
 用法：
     JAX_PLATFORMS=cpu conda run -n craftax python scripts/scan_seeds.py --start 2000 --count 60
     JAX_PLATFORMS=cpu conda run -n craftax python scripts/scan_seeds.py --seeds 2026,2027,2028
+    # 就绪度评分 + 候选种子（深层任务用）：
+    JAX_PLATFORMS=cpu conda run -n craftax python scripts/scan_seeds.py --candidates --count 1000
 """
 from __future__ import annotations
 
@@ -34,6 +36,10 @@ from craftax.craftax.envs.craftax_symbolic_env import (  # noqa: E402
     CraftaxSymbolicEnvNoAutoReset,
 )
 from craftax.planner.path_planner import blocked  # noqa: E402
+from craftax.planner.world import (  # noqa: E402
+    SeedReadiness,
+    WorldFacts,
+)
 
 # 需要统计可达性的矿石方块
 ORE_BLOCKS = {
@@ -126,6 +132,11 @@ def main() -> None:
     parser.add_argument("--count", type=int, default=60, help="扫描连续 seed 个数")
     parser.add_argument("--seeds", help="显式指定 seed 列表（逗号分隔），优先于 start/count")
     parser.add_argument("--out", default=None, help="输出 JSON 路径（默认 <data_dir>/seed_scan.json）")
+    parser.add_argument(
+        "--candidates",
+        action="store_true",
+        help="额外生成就绪度评分与按任务分组的候选种子列表（<data_dir>/seed_candidates.json）",
+    )
     args = parser.parse_args()
 
     if args.seeds:
@@ -157,6 +168,90 @@ def main() -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     print(f"\n=== golden seeds ({len(golden)}/{len(seeds)}): {golden}")
     print(f"写入 {out_path}")
+
+    if args.candidates:
+        _write_candidates(out_path)
+
+
+def _write_candidates(scan_path: Path) -> None:
+    """基于 seed_scan.json 生成就绪度评分 + 按任务分组的候选种子列表。
+
+    候选按 (可达, 装甲可行, seed) 字典序排序：每个深层任务优先"梯子全可达 +
+    表层能就地做铁甲"的种子（装甲路线），其次可达但无甲的种子（风筝/锚点恢复
+    路线）。供测试与 demo 录制用。
+    """
+    from craftax.planner.world import best_seeds, load_scan_results
+
+    data_dir = scan_path.parent
+    results = load_scan_results(str(scan_path))
+    # 就绪度评分：目标楼层 1..8 的可达 + 装甲可行
+    scores = []
+    for r in results:
+        seed = int(r["seed"])
+        wf = WorldFacts.for_seed(seed, str(scan_path))
+        for floor in range(1, 9):
+            rd = SeedReadiness(seed, floor, wf)
+            ev = rd.evaluate()
+            scores.append(
+                {
+                    "seed": seed,
+                    "target_floor": floor,
+                    "reach": ev["reach"],
+                    "armor_feasible": ev["armor_feasible"],
+                    "verdict": ev["verdict"],
+                }
+            )
+
+    # 按任务分组的候选列表
+    task_seeds = {}
+    for tid in _TASKS_FOR_CANDIDATES:
+        task_seeds[tid] = best_seeds(tid, n=5, scan_path=str(scan_path))
+
+    out = {
+        "source": str(scan_path),
+        "note": "候选按 (reach, armor_feasible) 排序：装甲路线优先，无甲走风筝+锚点恢复路线",
+        "scores": scores,
+        "task_candidates": task_seeds,
+    }
+    out_path = data_dir / "seed_candidates.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=2)
+    print(f"写入 {out_path}")
+    print("候选种子（深层任务，前 3 个）:")
+    for tid, seeds in task_seeds.items():
+        if seeds:
+            print(f"  {tid:<36} {seeds[:3]}")
+
+
+# 用于生成候选列表的任务（按目标楼层覆盖深浅）
+_TASKS_FOR_CANDIDATES = (
+    "native.enter_dungeon",
+    "native.enter_gnomish_mines",
+    "native.enter_sewers",
+    "native.enter_vault",
+    "native.enter_troll_mines",
+    "native.enter_fire_realm",
+    "native.enter_ice_realm",
+    "native.enter_graveyard",
+    "native.reach_floor_3",
+    "native.reach_floor_5",
+    "native.reach_boss_floor",
+    "native.collect_diamond",
+    "native.collect_sapphire",
+    "native.collect_ruby",
+    "native.learn_fireball",
+    "native.learn_iceball",
+    "native.defeat_gnome_warrior",
+    "native.defeat_gnome_archer",
+    "native.defeat_orc_soldier",
+    "native.defeat_orc_mage",
+    "native.defeat_kobold",
+    "native.defeat_knight",
+    "native.defeat_archer",
+    "native.defeat_troll",
+    "native.defeat_necromancer",
+    "native.damage_necromancer",
+)
 
 
 if __name__ == "__main__":

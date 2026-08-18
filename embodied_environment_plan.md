@@ -506,6 +506,96 @@ RESET
 
 验收标准：固定 seed、根目标、规划器版本、信息模式和决策随机数后，系统能确定地产生相同的 survey、选中计划、动作序列和终局结果；任意失败或重规划样本可从 manifest 定位到其原始观测、计划假设、动作范围和触发原因。
 
+### 6.2 环境感知的条件规划（Static Graph → WorldFacts → CombatModel → 楼层就绪门 → 滚动执行）
+
+§6.1 定义了"静态图 + 运行时图 + rolling planner"的通用框架。本节落地一个可运行的具体实例（`craftax/planner/`），把**静态任务依赖图**与**环境事实**结合成"条件规划"：图决定任务顺序，环境决定每条边是否可行、需要补什么装备。
+
+#### 6.2.1 分层架构
+
+```text
+静态任务依赖图 TaskGraph（task_id + dependencies，已存在）
+  └─ closure(任务) → 拓扑排序的任务链
+       └─ WorldFacts（环境事实：本 seed 各层可达矿石/梯子/水源/怪表）
+            └─ CombatModel（战斗/生存模型：DPS、击杀回合、清层期望伤害、生存判定）
+                 └─ Floor Readiness Gate（每层最低装备/属性/元素门槛）
+                      └─ 条件规划器（有序 PlanSteps + 门控 + fallback + 不可行中止）
+                           └─ 滚动执行器（step → validate → replan；战术原语）
+```
+
+各模块职责与关键机制：
+
+| 模块 | 文件 | 职责 |
+|---|---|---|
+| `TaskGraph` | `craftax/tasks/graph.py` | 静态依赖图：closure、拓扑层级、DAG 校验（已存在，本节不改）。 |
+| `WorldFacts` | `craftax/planner/world.py` | 每个 seed 的每层事实：可达矿石计数、梯子可达性、水源/食物、怪表；`SeedReadiness.evaluate(seed, target_floor)` 输出 `reach/armor_feasible/survival_ok/verdict`；`best_seeds(task, n)` 生成候选种子排序。 |
+| `CombatModel` | `craftax/planner/combat_model.py` | 纯函数数值模型：玩家 DPS、`turns_to_kill`、`hits_per_kill`、清层期望伤害、`survival_verdict`（CLEARABLE/MARGINAL/INFEASIBLE）、`recommend_tactic`（stand/kite）。系数集中在模块顶部常量，供对真实运行标定。 |
+| `FloorReadinessGate` | `craftax/planner/planner.py` | `FLOOR_GEAR_REQ` 每层最低装备（sword/armour/strength/elemental）；`check_floor_readiness` 返回缺失门槛；`resolve_gate` 由执行器补齐。 |
+| `SkillChainExecutor` | `craftax/planner/executor.py` | 滚动执行：依赖图推导任务链，逐层派发原语技能；集成就绪门、批量清怪 + 锚点恢复、健康感知睡眠、升级策略。 |
+
+#### 6.2.2 游戏机制数值（设计依据，已从 game_logic.py 核实）
+
+- **下楼门**：`change_floor` 要求本层 `monsters_killed >= 8`（原生规则）；L0 初始 `monsters_killed=10`（已清，刷新率 1x）。
+- **怪攻击**：相邻 + `attack_cooldown<=0` → 命中，冷却重置 5（每回合递减，无论是否相邻）；新刷怪槽冷却恒 <=0 → **每次接战约命中 1 次**，之后 5 回合内可安全击杀。→ 单层清 8 怪受击 ≈ `8 × mob_dmg × (1 − 护甲减免)`。
+- **SLEEP**：受击 ×3.5、回血 2x（13 步/HP）、回能量（~11 步/点）、醒于能量满或被击。**REST(17)**：受击 ×1、回血 1x（26 步/HP）、不回能量、动作锁 NOOP 至血满。
+- **护甲**：铁甲每件 3 铁 + 3 煤、10% 物免；4 件 40%。
+- **属性**：上限 5；每下新层 +1 XP；力量每点 +25% 物伤 +1 血；敏捷每点 +2 能量上限、-12.5% 疲劳衰减。
+- **怪表**：L1 orc(3伤/7HP) → L2 gnome(4/9) → L3 lizard(5/11) → L4 knight(6/12, 50%物免) → L5 troll(8/20, 20%物免) → L6 pigman(90%物免+火免) → L7 ice troll(90%物免+冰免) → L8 boss。
+- **恢复锚点**：`ASCEND` 无 8 杀门槛 → 已清的上层（尤其 L0）是天然安全恢复区。
+
+#### 6.2.3 双轨制种子策略
+
+种子扫描数据（`data/seed_scan.json` + `data/seed_candidates.json`）显示：
+- golden（梯子全可达）约 3%（30 扫 1、50 扫 1）；
+- L0 装甲可行（铁≥3 且煤≥3）约 35%；二者交集很稀有。
+
+因此分两条路线，`best_seeds(task)` 按 `(可达, 装甲可行, seed)` 排序：
+1. **装甲路线**：种子在可达浅层能就地做铁甲 → 下楼前做甲（40% 物抗，清层受击减半）。
+2. **风筝/锚点路线**：无甲种子 → 批量清怪 + 回 L0 锚点恢复 + 力量叠加 + 远程/风筝补生存。
+
+#### 6.2.4 批量清怪 + 锚点恢复（L1+ 生存主机制）
+
+单次清 8 怪的累积受击超出被动回血，因此不硬清：清到中止血量（<6）或能量将尽（<3）→ 回上一层锚点（已清、怪弱、有水/食物）→ SLEEP（回能量 + 回血）→ 再下继续，直至 `monsters_killed>=8`。该机制对战斗模型系数误差鲁棒（确定性，不依赖精确受击预估）。
+
+#### 6.2.5 表层制备（下地牢前装备链）
+
+按链上最深层需求（`_max_floor`）分级：
+- 只需到达 L1（`enter_dungeon`）：木剑即可快速下行（不强制清怪）。
+- 需清 L1+（`_max_floor>=2`）：木剑 → 木镐 → 石剑 → 石镐 → 铁剑（本层有铁时），绝不"为采铁先下楼"（递归保护）；铁甲仅在 `_max_floor>=2` 时按本层资源尽力做。
+
+#### 6.2.6 已实现与已知瓶颈（2026-08 状态）
+
+已实现：
+- `combat_model.py` / `world.py` / `planner.py` 与各自单测（快速套件全绿）；
+- 执行器集成就绪门、批量+锚点恢复、健康感知睡眠（血<8 不睡、SLEEP 回血副作用）、升级策略、`_collect_resource` 就地优先、工作台复用、`seed` 参数与 `abort_reason`；
+- **风筝（2026-08 追加）**：跟踪怪攻击冷却（健康下降 + 相邻 → 计时 5，逐拍递减）；
+  仅当 `recommend_tactic==kite`（慢速击杀层）且 `timer==1`（怪冷却将归零）时拉开
+  2 步——规避"后续命中"；`timer==0`（新鲜怪）照常攻击承担必中首击。效果：击杀
+  需 >5 回合的慢速怪受击周期 5→7 回合。
+- **安全睡眠点**：`_safe_sleep_spot_walk`（找 >=14 格安全点）已实现但**未接入睡眠
+  主路径**——量化发现 L0 上"走位找点"的接战暴露 > 省下的打醒风险；安全睡眠靠
+  "回已清上层锚点"（批量恢复）实现。
+- **敏捷量化评估**：`awake_budget_steps`（dex1≈217 → dex5≈930 清醒步）、
+  `energy_is_bottleneck`（按**单批工作段**能量 vs 预算）。结论：批量+锚点恢复下
+  单批 ~46-64 步 << dex1 预算 217 → **能量不是瓶颈，力量优先**；敏捷只在力量满后
+  （深层长程）或不可恢复的单批超长段有价值。
+- **扩大种子扫描**：`scripts/scan_seeds_chunked.py`（每 chunk 独立子进程，规避 JAX
+  CPU 编译内存映射泄漏）；1000 级扫描产出 golden∩L0 装甲可行交集（如 2011、2111）。
+
+已知瓶颈（游戏机制固有，非代码 bug）：
+- **L0 表层制备生存墙**：每个僵尸接战固定受击 1 次（2 伤，与剑无关——怪刷新即
+  冷却<=0），制备装备 ~15-20 次采集 → ~10-15 次接战 → 20-30 伤 >> 9 血+被动回血；
+  血 <8 无法安全睡（3.5x=7）。铁甲 1 件（10%）只把 2 伤降到 1.8，**不足以抵消接战
+  次数**（实验证实：2011/2111 甲源 seed 仍死在制备中）。
+- 真正出路（按可行性排序）：a) **远程击杀**（L1 宝箱弓 + 箭，0 受击清怪）；b) 大幅
+  缩短制备路径（相邻采集、减少走动）；c) 满铁甲（12 铁 12 煤，40% 把 2 伤降到 1.2）
+  的稀有 seed。
+
+#### 6.2.7 验收标准
+
+- 快速套件（`-m "not slow"`）保持全绿；
+- 固定 seed + 任务 + 决策随机数下，执行器行为确定（同轨迹可重放）；
+- 慢速深层套件在候选种子上逐项通过（当前 `enter_dungeon` 通过；深层清怪任务为已知待办）。
+
 ---
 
 ## 7. VLA 与 World Model 数据集录制设计

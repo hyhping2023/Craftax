@@ -15,7 +15,11 @@ from craftax.craftax.constants import Achievement  # noqa: E402
 from craftax.craftax.envs.craftax_symbolic_env import (  # noqa: E402
     CraftaxSymbolicEnvNoAutoReset,
 )
-from craftax.planner.executor import SkillChainExecutor  # noqa: E402
+from craftax.planner.executor import (  # noqa: E402
+    LEVEL_UP_DEXTERITY,
+    LEVEL_UP_STRENGTH,
+    SkillChainExecutor,
+)
 
 
 def _host(state):
@@ -134,8 +138,25 @@ def run_task(task_id: str, seed: int = 2026, max_steps: int = 2000) -> dict:
 
 # 深层任务使用的"好种子"：scan_seeds.py 扫描出的 L0-L7 梯子全部可达的种子。
 # 普通种子（2026/2027/2028）存在 L0 或深层梯子被 WATER 分隔而不可达的问题，
-# 深层任务必须优先用这些 golden seeds。
-GOOD_SEEDS = (3017, 3050)
+# 深层任务必须优先用这些 golden seeds。3017/3050 为早期发现；
+# 2011/2111 为扩大扫描（2000-2999）发现的 golden∩L0 装甲可行（可做铁甲）种子。
+GOOD_SEEDS = (2011, 2111, 3017, 3050)
+
+
+def _deep_seeds(task_id: str) -> tuple:
+    """深层任务的候选种子：先取 scan_seeds 就绪度排序的候选，再补 golden + 常规。"""
+    from craftax.planner.world import best_seeds, load_scan_results
+
+    try:
+        cands = best_seeds(task_id, n=5)
+    except Exception:  # noqa: BLE001  seed_scan.json 缺失/损坏时回退
+        cands = []
+    seen = set(cands)
+    for s in (*cands, *GOOD_SEEDS, 2027, 2028, 2026):
+        if s not in seen:
+            seen.add(s)
+            cands.append(s)
+    return tuple(cands)
 
 
 @pytest.mark.parametrize(
@@ -183,6 +204,35 @@ def test_executor_chain_has_dependencies_first():
     assert chain.index("native.craft_wood_pickaxe") < chain.index("native.collect_coal")
 
 
+def test_enter_dungeon_fast():
+    """进入 L1（只需到达）：表层制备木剑后快速下行，不强制清怪。"""
+    result = None
+    for seed in (2026, 2027, 2028, *GOOD_SEEDS):
+        result = run_task("native.enter_dungeon", seed=seed, max_steps=4000)
+        if result["done"]:
+            break
+    assert result is not None and result["done"], f"enter_dungeon 未完成: {result}"
+
+
+def test_level_up_choice_strength_first():
+    """升级策略：力量优先；仅当能量瓶颈（深层长单批）或力量满后补敏捷。"""
+    ex = SkillChainExecutor("native.enter_gnomish_mines")  # max_floor=2
+    inv = {"sword": 3, "armour": [1, 0, 0, 0]}
+    # 地表（floor 0）：力量优先
+    assert ex._level_up_choice({"xp": 1, "strength": 1, "dexterity": 1,
+                                "intelligence": 1, "floor": 0,
+                                "inventory": inv}) == LEVEL_UP_STRENGTH
+    # 深层且已有战力（非能量瓶颈）：力量优先
+    assert ex._level_up_choice({"xp": 1, "strength": 2, "dexterity": 1,
+                                "intelligence": 1, "floor": 2,
+                                "inventory": inv}) == LEVEL_UP_STRENGTH
+    # 力量满后：深层任务补敏捷
+    ex_deep = SkillChainExecutor("native.defeat_necromancer")  # max_floor=8
+    assert ex_deep._level_up_choice({"xp": 1, "strength": 5, "dexterity": 1,
+                                     "intelligence": 1, "floor": 5,
+                                     "inventory": inv}) == LEVEL_UP_DEXTERITY
+
+
 # ---------------------------------------------------------------------------
 # 深层任务集成测试（真实 env 步进，耗时较长 → 标记 slow，默认被 pyproject 跳过）
 # ---------------------------------------------------------------------------
@@ -201,9 +251,9 @@ def test_executor_chain_has_dependencies_first():
     ],
 )
 def test_deep_task_slow(task_id):
-    """深层任务：优先 golden seeds（梯子全部可达），任一成功即通过。"""
+    """深层任务：优先就绪度候选/golden seeds（梯子全部可达），任一成功即通过。"""
     result = None
-    for seed in (*GOOD_SEEDS, 2027, 2028, 2026):
+    for seed in _deep_seeds(task_id):
         result = run_task(task_id, seed=seed, max_steps=0)
         if result["done"]:
             break
@@ -219,7 +269,7 @@ def test_magic_tasks_slow():
         "native.fire_bow",
     ):
         result = None
-        for seed in (*GOOD_SEEDS, 2027, 2028, 2026):
+        for seed in _deep_seeds(task_id):
             result = run_task(task_id, seed=seed, max_steps=0)
             if result["done"]:
                 break
@@ -231,7 +281,7 @@ def test_enchant_tasks_slow():
     """附魔任务：enchant_sword / enchant_armour（需宝石 + 附魔台 + 满蓝）。"""
     for task_id in ("native.enchant_sword", "native.enchant_armour"):
         result = None
-        for seed in (*GOOD_SEEDS, 2027, 2028, 2026):
+        for seed in _deep_seeds(task_id):
             result = run_task(task_id, seed=seed, max_steps=0)
             if result["done"]:
                 break
@@ -242,7 +292,7 @@ def test_enchant_tasks_slow():
 def test_boss_task_slow():
     """Boss 战：defeat_necromancer（需清 7 层 + 元素附魔 + 打 Boss，极慢）。"""
     result = None
-    for seed in (*GOOD_SEEDS, 2027, 2028, 2026):
+    for seed in _deep_seeds("native.defeat_necromancer"):
         result = run_task("native.defeat_necromancer", seed=seed, max_steps=0)
         if result["done"]:
             break
