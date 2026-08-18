@@ -33,6 +33,7 @@ def _survive_spec() -> TaskSpec:
             {"type": "achievement", "name": "DEFEAT_ZOMBIE"},
         ],
         renderer_config={},
+        dependencies=[],
     )
 
 
@@ -56,6 +57,7 @@ def _collect_wood_spec() -> TaskSpec:
         success_predicate={"type": "achievement", "name": "COLLECT_WOOD"},
         annotation_predicates=[{"type": "achievement", "name": "COLLECT_WOOD"}],
         renderer_config={},
+        dependencies=[],  # 徒手砍树即可，无需工具
     )
 
 
@@ -86,6 +88,10 @@ def _craft_tools_spec() -> TaskSpec:
         },
         annotation_predicates=pickaxes,
         renderer_config={},
+        dependencies=[
+            "native.collect_wood",
+            "native.place_table",  # 合成需在工作台旁
+        ],
     )
 
 
@@ -133,6 +139,7 @@ def _defeat_enemy_spec() -> TaskSpec:
         },
         annotation_predicates=[{"type": "achievement", "name": name} for name in enemies],
         renderer_config={},
+        dependencies=["native.craft_wood_sword"],  # 战斗需要近战武器
     )
 
 
@@ -180,6 +187,7 @@ def _explore_dungeon_spec() -> TaskSpec:
             {"type": "achievement", "name": "ENTER_GRAVEYARD"},
         ],
         renderer_config={},
+        dependencies=["native.enter_dungeon"],  # 需先进入地下城沿楼层下探
     )
 
 

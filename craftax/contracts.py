@@ -9,8 +9,10 @@
 """
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol
 
 import numpy as np
@@ -81,6 +83,17 @@ class FrameSampleConfig:
         return {"step_rate_hz": self.step_rate_hz, "video_fps": self.video_fps}
 
 
+def default_data_dir() -> str:
+    """数据集/录制输出的默认根目录。
+
+    默认 <仓库根>/data；可用环境变量 CRAFTAX_DATA_DIR 覆盖。
+    shard 目录布局为 <root>/<run_id>/<producer_id>/<attempt_id>/。
+    """
+    if "CRAFTAX_DATA_DIR" in os.environ:
+        return os.environ["CRAFTAX_DATA_DIR"]
+    return str(Path(__file__).resolve().parent.parent / "data")
+
+
 @dataclass(frozen=True)
 class RecordingConfig:
     """数据集录制配置。spool_dir 为本地暂存目录，shard 封存后不可变。"""
@@ -89,7 +102,7 @@ class RecordingConfig:
     dataset_run_id: str = "default"
     frame_sample: FrameSampleConfig = FrameSampleConfig()
     gold_frames: bool = False  # 是否额外保存每 step PNG 金标帧
-    spool_dir: str = "spool"
+    spool_dir: str = field(default_factory=default_data_dir)
     shard_max_transitions: int = 50_000  # 一个 shard 的 transition 上限（待基准后调整）
 
     def validate(self) -> None:
@@ -169,6 +182,11 @@ class TaskSpec:
 
     success_predicate / annotation_predicates 为可序列化的表达式（如
     {"type": "achievement", "name": "COLLECT_WOOD"}），由 tasks 模块解析。
+
+    dependencies：前置任务 task_id 列表（严格依赖）。例如 collect_coal 需要
+    镐子才能挖矿，故依赖 native.craft_wood_pickaxe；enter_sewers 需要先到
+    gnomish_mines，故依赖 native.enter_gnomish_mines。用于任务规划/排序/展示，
+    不改变游戏规则。
     """
 
     task_id: str
@@ -179,6 +197,7 @@ class TaskSpec:
     annotation_predicates: List[Dict[str, Any]] = field(default_factory=list)
     renderer_config: Dict[str, Any] = field(default_factory=dict)
     action_vocabulary_version: str = "craftax-native-v1"
+    dependencies: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -286,11 +305,17 @@ class StateSummary:
     is_resting: bool
     inventory: Dict[str, Any] = field(default_factory=dict)
     achievements: List[str] = field(default_factory=list)
+    sword_enchantment: int = 0  # 0=无, 1=火, 2=冰
+    bow_enchantment: int = 0
+    armour_enchantments: List[int] = field(default_factory=lambda: [0, 0, 0, 0])
+    learned_spells: List[bool] = field(default_factory=lambda: [False, False])  # 火球/冰球
     task_progress: float = 0.0
     task_done: bool = False
     instruction: str = ""
     task_id: str = ""
     task_version: str = ""
+    player_position: List[int] = field(default_factory=lambda: [0, 0])
+    player_direction: int = 0
 
 
 @dataclass

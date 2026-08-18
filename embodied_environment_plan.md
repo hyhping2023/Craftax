@@ -318,6 +318,7 @@ class TaskSpec:
     annotation_predicates: list[dict]
     renderer_config: dict
     action_vocabulary_version: str
+    dependencies: list[str]       # 严格前置 task_id；用于静态 DAG，不改变游戏规则
 ```
 
 只读 `TaskAdapter` 必须在不改动 `craftax_step`、world generation 或 `EnvParams` 的前提下：
@@ -354,6 +355,156 @@ class TaskSpec:
 | 目标导航 | 到达楼层、找到熔炉、打开宝箱 | 目标条件策略。 |
 | 战斗 | 击败指定敌人或 Boss 阶段 | 反应控制与风险管理。 |
 | 演示任务 | 人类完成指定流程 | 高质量 imitation / VLA 数据。 |
+
+### 6.1 面向地图实例的任务规划与录制闭环
+
+自动录制不能将单个 builtin task 直接等同于一个 episode。推荐以“**可复现世界实例中的根目标尝试**”为录制和规划单位：先基于地图 seed 观察周边世界，再从任务依赖图中实例化一个当前可执行的子图，执行有限长度的计划片段，并在关键状态变化后验证和重规划。
+
+这既保留了 seed 级复现能力，也能保留同一地图中不同目标、不同路线和失败恢复的有效样本。
+
+#### 6.1.1 标识层级：seed 不是唯一 episode ID
+
+| 层级 | 标识/组成 | 语义与用途 |
+|---|---|---|
+| `world_instance_id` | `environment_code_revision + env_name + map_seed + generation_config_hash` | 可重复生成的世界实例；`map_seed` 是核心键，但不单独充当唯一 ID。 |
+| `episode_id` | UUID/ULID；关联 `world_instance_id + root_task_id + task_graph_version + planner_version + controller/policy version` | 一次从 reset 到终局、主动停止或预算耗尽的完整目标尝试。 |
+| `plan_run_id` | UUID；关联一次 survey、候选计划集与选中计划 | 一个 episode 内的一次规划决策；重规划必须创建新的记录，而不是覆盖旧计划。 |
+| `task_execution_id` | UUID；关联 `plan_run_id + task_id + occurrence_index` | 一个任务节点的一次实际执行，记录起止状态、动作范围和结果。 |
+
+同一个 `world_instance_id` 可以有多个 episode，例如同一 seed 下尝试不同根目标、同一根目标使用不同规划器、或在不同初始决策后形成不同路线。重复运行相同 `world_instance_id`、根目标、控制器版本和行动决策时，仍应使用独立 `episode_id`，并用 `attempt_index` 表示重复尝试。
+
+#### 6.1.2 两层任务图
+
+任务图必须分成静态语义层与运行时实例层，避免把“游戏规则上的依赖”与“本次地图的资源、距离和风险”混为一谈。
+
+1. **静态任务依赖图（Task Dependency Graph）**
+   - 节点是版本化 `TaskSpec.task_id`；边来自现有 `TaskSpec.dependencies`，表达不可绕过的严格前置任务。
+   - 图必须为 DAG；注册 builtin task 时校验依赖目标存在、无环且版本固定。
+   - `TaskSpec` 继续承担原生成功谓词和语义标注；不向游戏规则注入任务奖励、初始状态或动作约束。
+   - 规划器额外读取只读的 `TaskPlanningDescriptor`（可由 builtin registry 派生），描述每个任务的逻辑前置条件、预期效果/物资变化、候选资源类型、工具要求、预估风险和替代任务组。它是规划元数据，不是环境真相来源。
+
+2. **运行时计划图（Runtime Plan Graph）**
+   - 每次 survey 后，以根目标为反向起点裁剪静态 DAG，只保留当前尚未满足、可能可执行的任务与其依赖。
+   - 节点带运行时属性：`status`、前置条件是否满足、所需/已知可用物资、候选地点、路径代价、风险、置信度及估计收益。
+   - 边除严格任务依赖外，还可包含 `produces -> requires` 的资源/能力边和可替代分支。例如“获得食物”可以有采集、狩猎或制作等 OR 分支；选中一种路径不应删除其他候选路径。
+   - 若扫描证明某资源不可达或某节点失败，标记该实例节点/边为不可行并重新求解；禁止修改静态 `TaskSpec.dependencies` 来适应单次地图。
+
+建议的运行时节点结构：
+
+```json
+{
+  "task_id": "native.craft_wood_pickaxe",
+  "occurrence_index": 0,
+  "strict_dependencies": ["native.collect_wood", "native.place_table"],
+  "preconditions": [
+    {"kind": "inventory", "item": "wood", "min_count": 2, "status": "satisfied"},
+    {"kind": "reachable_station", "station": "crafting_table", "status": "unknown"}
+  ],
+  "candidate_locations": [{"position": [x, y], "distance": 17, "confidence": 0.9}],
+  "estimated_cost": {"steps": 35, "risk": 0.1},
+  "status": "candidate"
+}
+```
+
+#### 6.1.3 Survey：有边界、可审计、非全知的充分性扫描
+
+“充分性扫描”不应表示读取完整 `EnvState.map` 后做全图最优规划；这会让录制数据含有 agent 在正常交互中不可获得的特权信息。默认 planner 只能消费与 agent 一致的观测、背包、原生事件和已经访问的位置。完整 `EnvState` 仍按 canonical 录制，但仅供回放、离线评估和调试。
+
+每轮 `survey` 必须有明确预算，而非无限探索：
+
+```text
+输入：当前位置、当前 observation/history、inventory、根目标、scan_budget
+输出：SurveySnapshot + 已消耗动作区间 + 未知区域/不确定项
+预算：最多步骤数、最大探索半径或风险上限、最大目标候选数
+```
+
+`SurveySnapshot` 至少记录：
+
+- 起止 `state_index`、位置、背包、生命/饥饿等生存状态，以及使用的观测 schema；
+- 已观察的资源、工作站、敌对实体、地形、出口和可达路径；
+- 每项发现的数量/距离估计、观测来源、置信度和发现时 timestep；
+- 资源状态的三值或四值语义：`confirmed_available`、`not_observed`、`confirmed_unreachable`、`confirmed_absent`；
+- 未访问区域、扫描预算消耗和提前停止原因。
+
+只有当游戏规则或已完成的覆盖证明支持时才可写 `confirmed_absent`；“当前扫描范围未发现”必须写为 `not_observed`。如需使用完整状态做 oracle/课程生成，必须设置 `planner_information_mode="privileged"`，与正常部分可观测录制分开标记、分割和评估，不能混入同一示范分布。
+
+#### 6.1.4 规划与执行状态机
+
+采用滚动规划，而非“先生成一条完整长计划后不再验证地执行”。每个 episode 按下列状态机运行：
+
+```text
+RESET
+  -> INITIAL_SURVEY
+  -> BUILD_RUNTIME_GRAPH
+  -> PLAN
+  -> EXECUTE_CHUNK
+  -> VALIDATE
+       -> SUCCESS / TERMINAL / BUDGET_EXHAUSTED
+       -> RESURVEY -> REPLAN -> EXECUTE_CHUNK
+```
+
+1. **INITIAL_SURVEY**：在 `scan_budget.initial` 内建立初始 `SurveySnapshot`。
+2. **BUILD_RUNTIME_GRAPH**：从根任务反向展开静态依赖，结合已满足前置条件、可达资源和替代分支生成运行时图。
+3. **PLAN**：输出候选计划及被选中计划。计划必须包含有序任务节点、每个节点的前置条件、预期后置条件、目标地点、最大动作预算和回退分支。
+4. **EXECUTE_CHUNK**：只执行到下一个任务节点完成、关键检查点或 `execution_chunk_budget`，不得盲目执行整条长链。
+5. **VALIDATE**：基于最新 observation 和任务成功谓词核验实际后置条件，比较预期与实际状态差异。
+6. **RESURVEY / REPLAN**：若需要，创建新的 `survey_id`、`plan_run_id` 和计划版本；保留历史计划和触发原因，绝不原地覆盖。
+
+以下条件必须触发校验，通常也应触发重扫或重规划：
+
+- 当前任务成功、失败或达到其动作预算；
+- 关键资源、工具、工作站或路径与计划假设不一致；
+- 生命、饥饿、能量或风险超过阈值；
+- 发现新的低成本替代资源/路径；
+- 进入新区域、楼层变化或可观测地图显著扩展；
+- 环境终局、控制器中止或全局 episode 预算耗尽。
+
+`PLAN` 的优化目标应由配置固定并版本化，例如按词典序最小化：`失败风险 -> 预计动作数 -> 不必要探索 -> 资源消耗`。首期不必追求全局最优；一个可解释、可回放、能正确重规划的启发式搜索优先于复杂但不可审计的最优求解器。
+
+#### 6.1.5 录制数据与可回放性
+
+现有 canonical transition 时间轴之外，必须增加以下规划元数据表；这些表均以 ID 关联 episode，不应把可变 JSON 塞进每一行 transition：
+
+| 表 | 每行粒度 | 核心字段 |
+|---|---|---|
+| `world_instances` | 可复现世界实例 | `world_instance_id`, `map_seed`, `generation_config_hash`, 环境/资源版本。 |
+| `episodes` | 根目标尝试 | `episode_id`, `world_instance_id`, `root_task_id`, `attempt_index`, planner/controller/version, information mode, 最终结果。 |
+| `surveys` | 一次有限扫描 | `survey_id`, 起止 timestep, budget, observations summary, 未知项, 覆盖/置信度, stop reason。 |
+| `plan_runs` | 一次规划求解 | `plan_run_id`, `survey_id`, runtime graph hash, candidate plan summaries, selected plan, objective/config version。 |
+| `task_executions` | 一次节点执行 | `task_execution_id`, `plan_run_id`, `task_id`, 起止 timestep, expected/actual postconditions, outcome。 |
+| `replan_events` | 计划转换 | 前后 `plan_run_id`, timestep, reason code, 计划偏差摘要。 |
+
+每条 action metadata 增加可选的 `plan_run_id`、`task_execution_id`、`survey_id` 和 `decision_kind`（`survey`、`navigation`、`collection`、`craft`、`combat`、`validation`、`fallback`）。这样训练数据可以按需导出：
+
+- 端到端 VLA 的 `(instruction, observation, action)`；
+- 高层任务选择/子目标预测；
+- 世界模型的状态转移与事件预测；
+- 计划偏差、失败恢复和重规划决策；
+- 同一 `world_instance_id` 下不同路线或不同 planner 的对比评估。
+
+终局后必须运行一次 `FINAL_VALIDATE`：保存最终 observation、根目标成功谓词、未完成节点、资源/生存状态、最后一轮 survey 的新发现和停止原因。它不是为了继续执行，而是为了使失败、部分成功和替代路线都能被可靠分析。
+
+#### 6.1.6 录制完整性不变量与分阶段落地
+
+新增不变量：
+
+- `world_instance_id` 的生成材料完整记录；同一 ID 必须重建出相同初始世界，环境或生成配置变化必须产生新 ID；
+- 每个 `plan_run` 只引用一个明确的 `survey_id` 和静态任务图版本；
+- 运行时图中的严格依赖必须是静态依赖图的子集，不能因扫描结果被删除；
+- 每个计划节点均能追溯到对应的 action 区间、验证结果或明确的未执行原因；
+- 每次重规划都有结构化 reason code，且前一计划仍可读取；
+- `planner_information_mode`、扫描预算、规划目标和随机决策 seed 均进入 manifest；
+- 同一 episode 中 `state/action/frame` 的既有时间对齐不因 survey、plan 或 replan 而改变。
+
+实施顺序：
+
+1. **先实现静态 DAG 校验与只读 planning descriptor**，并从现有 77 个 builtin `dependencies` 生成图；输出图版本/hash 和根任务反向依赖闭包。
+2. **实现 observation-only survey 与 runtime graph builder**，先支持资源、工具、工作站、可达性和生存风险的最小集合；用固定扫描预算做 deterministic replay 测试。
+3. **实现启发式 rolling planner**，每次只给出有限 action chunk，完成后调用 task adapter 验证；先覆盖采集 -> 制作 -> 采矿的链路。
+4. **接入 recorder 的 survey/plan/task-execution/replan 表与 validator**，确保每次决策都能与 transition 时间轴关联。
+5. **最后引入可选 privileged oracle/curriculum 模式**，严格隔离其数据集 split，比较其与 observation-only planner 的上限差异。
+
+验收标准：固定 seed、根目标、规划器版本、信息模式和决策随机数后，系统能确定地产生相同的 survey、选中计划、动作序列和终局结果；任意失败或重规划样本可从 manifest 定位到其原始观测、计划假设、动作范围和触发原因。
 
 ---
 
@@ -465,6 +616,10 @@ state/timestep
   "policy_checkpoint_hash": "optional-sha256",
   "instruction_id": "native.collect_wood.v1",
   "instruction_text": "Collect wood.",
+  "survey_id": "optional-survey-uuid",
+  "plan_run_id": "optional-plan-uuid",
+  "task_execution_id": "optional-task-execution-uuid",
+  "decision_kind": "collection",
   "event_tokens": ["COLLECT_WOOD"],
   "log_prob": null,
   "value_estimate": null,
@@ -639,6 +794,8 @@ craftax/
 实现内容：
 
 - 原生成就/事件到 task instruction、progress 和 event token 的 registry；
+- 基于 `TaskSpec.dependencies` 的静态 DAG 校验、任务 planning descriptor、observation-only survey、运行时计划图与滚动重规划；
+- `world_instance/episode/survey/plan_run/task_execution/replan` 元数据表及其与 transition 时间轴的关联；
 - EnvState PyTree 稳定展开与 schema；
 - 每 step state/action/reward/done/event 的 Zarr writer；
 - transition/episode/frame index 的 Parquet writer；
@@ -656,6 +813,7 @@ craftax/
 - reset state 和 terminal state 均有可定位的视频 frame；
 - task/schema/renderer/encoder/hash 可确定数据语义；
 - 可导出 VLA `(instruction, RGB, action)` 样本与 World Model 连续预测样本；
+- 对固定 seed/根目标/规划器版本，survey、计划、动作和终局均可确定性回放；失败和重规划可追溯到原始观测、计划假设、动作区间与 reason code；
 - 基准结果决定正式的 `S/F/R/K/GOP/shard size` 默认值。
 
 ### Phase 3：RTX 3090 批量采集与稳健写入

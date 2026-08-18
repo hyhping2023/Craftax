@@ -21,32 +21,44 @@ TASK_VERSION = "1.0.0"
 # 单成就任务
 # ---------------------------------------------------------------------------
 
-# (task_id, achievement_name, instruction, objective)
-_SINGLE_TASK_DEFS: List[Tuple[str, str, str, str]] = [
+# (task_id, achievement_name, instruction, objective, dependencies)
+# 合成链严格依赖：木镐<-木+工作台；石镐<-木镐+石；铁镐<-石镐+铁+煤+熔炉+工作台；
+# 钻石镐<-铁镐+钻石。剑/盔甲同理。
+_SINGLE_TASK_DEFS: List[Tuple[str, str, str, str, List[str]]] = [
     # 镐
     (
         "native.craft_wood_pickaxe",
         "MAKE_WOOD_PICKAXE",
         "Craft a wooden pickaxe. / 制作一把木镐。",
         "制作一把木镐（MAKE_WOOD_PICKAXE 成就）。",
+        ["native.collect_wood", "native.place_table"],
     ),
     (
         "native.craft_stone_pickaxe",
         "MAKE_STONE_PICKAXE",
         "Craft a stone pickaxe. / 制作一把石镐。",
         "制作一把石镐（MAKE_STONE_PICKAXE 成就）。",
+        ["native.craft_wood_pickaxe", "native.collect_stone", "native.place_table"],
     ),
     (
         "native.craft_iron_pickaxe",
         "MAKE_IRON_PICKAXE",
         "Craft an iron pickaxe. / 制作一把铁镐。",
         "制作一把铁镐（MAKE_IRON_PICKAXE 成就）。",
+        [
+            "native.craft_stone_pickaxe",
+            "native.collect_iron",
+            "native.collect_coal",
+            "native.place_furnace",
+            "native.place_table",
+        ],
     ),
     (
         "native.craft_diamond_pickaxe",
         "MAKE_DIAMOND_PICKAXE",
         "Craft a diamond pickaxe. / 制作一把钻石镐。",
         "制作一把钻石镐（MAKE_DIAMOND_PICKAXE 成就）。",
+        ["native.craft_iron_pickaxe", "native.collect_diamond", "native.place_table"],
     ),
     # 剑
     (
@@ -54,24 +66,34 @@ _SINGLE_TASK_DEFS: List[Tuple[str, str, str, str]] = [
         "MAKE_WOOD_SWORD",
         "Craft a wooden sword. / 制作一把木剑。",
         "制作一把木剑（MAKE_WOOD_SWORD 成就）。",
+        ["native.collect_wood", "native.place_table"],
     ),
     (
         "native.craft_stone_sword",
         "MAKE_STONE_SWORD",
         "Craft a stone sword. / 制作一把石剑。",
         "制作一把石剑（MAKE_STONE_SWORD 成就）。",
+        ["native.craft_wood_pickaxe", "native.collect_stone", "native.place_table"],
     ),
     (
         "native.craft_iron_sword",
         "MAKE_IRON_SWORD",
         "Craft an iron sword. / 制作一把铁剑。",
         "制作一把铁剑（MAKE_IRON_SWORD 成就）。",
+        [
+            "native.craft_stone_pickaxe",
+            "native.collect_iron",
+            "native.collect_coal",
+            "native.place_furnace",
+            "native.place_table",
+        ],
     ),
     (
         "native.craft_diamond_sword",
         "MAKE_DIAMOND_SWORD",
         "Craft a diamond sword. / 制作一把钻石剑。",
         "制作一把钻石剑（MAKE_DIAMOND_SWORD 成就）。",
+        ["native.craft_iron_pickaxe", "native.collect_diamond", "native.place_table"],
     ),
     # 盔甲
     (
@@ -79,12 +101,25 @@ _SINGLE_TASK_DEFS: List[Tuple[str, str, str, str]] = [
         "MAKE_IRON_ARMOUR",
         "Craft iron armour. / 制作一套铁盔甲。",
         "制作一套铁盔甲（MAKE_IRON_ARMOUR 成就）。",
+        [
+            "native.craft_stone_pickaxe",
+            "native.collect_iron",
+            "native.collect_coal",
+            "native.place_furnace",
+            "native.place_table",
+        ],
     ),
     (
         "native.craft_diamond_armour",
         "MAKE_DIAMOND_ARMOUR",
         "Craft diamond armour. / 制作一套钻石盔甲。",
         "制作一套钻石盔甲（MAKE_DIAMOND_ARMOUR 成就）。",
+        [
+            "native.craft_iron_pickaxe",
+            "native.collect_diamond",
+            "native.place_furnace",
+            "native.place_table",
+        ],
     ),
     # 道具
     (
@@ -92,12 +127,14 @@ _SINGLE_TASK_DEFS: List[Tuple[str, str, str, str]] = [
         "MAKE_ARROW",
         "Craft an arrow. / 制作一支箭。",
         "制作一支箭（MAKE_ARROW 成就）。",
+        ["native.craft_wood_pickaxe", "native.collect_stone", "native.collect_wood"],
     ),
     (
         "native.craft_torch",
         "MAKE_TORCH",
         "Craft a torch. / 制作一根火把。",
         "制作一根火把（MAKE_TORCH 成就）。",
+        ["native.craft_wood_pickaxe", "native.collect_coal", "native.collect_wood"],
     ),
     # 弓
     (
@@ -105,12 +142,14 @@ _SINGLE_TASK_DEFS: List[Tuple[str, str, str, str]] = [
         "FIND_BOW",
         "Find a bow. / 找到一张弓。",
         "找到一张弓（FIND_BOW 成就）。",
+        [],  # 宝箱/掉落获得，无严格前置
     ),
     (
         "native.fire_bow",
         "FIRE_BOW",
         "Shoot an arrow. / 射出一支箭。",
         "用弓射出一支箭（FIRE_BOW 成就）。",
+        ["native.find_bow", "native.craft_arrow"],
     ),
     # 附魔
     (
@@ -118,12 +157,14 @@ _SINGLE_TASK_DEFS: List[Tuple[str, str, str, str]] = [
         "ENCHANT_SWORD",
         "Enchant a sword. / 附魔一把剑。",
         "在附魔台为剑附魔（ENCHANT_SWORD 成就）。",
+        ["native.craft_stone_sword", "native.enter_fire_realm", "native.enter_ice_realm"],
     ),
     (
         "native.enchant_armour",
         "ENCHANT_ARMOUR",
         "Enchant armour. / 附魔盔甲。",
         "在附魔台为盔甲附魔（ENCHANT_ARMOUR 成就）。",
+        ["native.craft_iron_armour", "native.enter_fire_realm", "native.enter_ice_realm"],
     ),
     # 魔法
     (
@@ -131,24 +172,28 @@ _SINGLE_TASK_DEFS: List[Tuple[str, str, str, str]] = [
         "LEARN_FIREBALL",
         "Learn fireball. / 学会火球术。",
         "阅读魔法书学会火球术（LEARN_FIREBALL 成就）。",
+        ["native.open_chest", "native.enter_fire_realm"],
     ),
     (
         "native.learn_iceball",
         "LEARN_ICEBALL",
         "Learn iceball. / 学会冰球术。",
         "阅读魔法书学会冰球术（LEARN_ICEBALL 成就）。",
+        ["native.open_chest", "native.enter_ice_realm"],
     ),
     (
         "native.cast_fireball",
         "CAST_FIREBALL",
         "Cast a fireball. / 施放一个火球。",
         "施放一个火球（CAST_FIREBALL 成就）。",
+        ["native.learn_fireball"],
     ),
     (
         "native.cast_iceball",
         "CAST_ICEBALL",
         "Cast an iceball. / 施放一个冰球。",
         "施放一个冰球（CAST_ICEBALL 成就）。",
+        ["native.learn_iceball"],
     ),
 ]
 
@@ -158,6 +203,7 @@ def _single_task_spec(
     achievement: str,
     instruction: str,
     objective: str,
+    dependencies: List[str],
 ) -> TaskSpec:
     return TaskSpec(
         task_id=task_id,
@@ -167,12 +213,13 @@ def _single_task_spec(
         success_predicate={"type": "achievement", "name": achievement},
         annotation_predicates=[{"type": "achievement", "name": achievement}],
         renderer_config={},
+        dependencies=list(dependencies),
     )
 
 
 SINGLE_TASK_SPECS: List[TaskSpec] = [
-    _single_task_spec(task_id, achievement, instruction, objective)
-    for task_id, achievement, instruction, objective in _SINGLE_TASK_DEFS
+    _single_task_spec(task_id, achievement, instruction, objective, dependencies)
+    for task_id, achievement, instruction, objective, dependencies in _SINGLE_TASK_DEFS
 ]
 
 
@@ -244,6 +291,11 @@ def _craft_full_kit_spec() -> TaskSpec:
             for n in PICKAXE_ACHIEVEMENTS + SWORD_ACHIEVEMENTS + ARMOUR_ACHIEVEMENTS
         ],
         renderer_config={},
+        dependencies=[
+            "native.craft_wood_pickaxe",
+            "native.craft_wood_sword",
+            "native.craft_iron_armour",
+        ],
     )
 
 
@@ -271,6 +323,12 @@ def _master_crafter_spec() -> TaskSpec:
         },
         annotation_predicates=[_achievement_expr(n) for n in PICKAXE_ACHIEVEMENTS],
         renderer_config={},
+        dependencies=[
+            "native.craft_wood_pickaxe",
+            "native.craft_stone_pickaxe",
+            "native.craft_iron_pickaxe",
+            "native.craft_diamond_pickaxe",
+        ],
     )
 
 

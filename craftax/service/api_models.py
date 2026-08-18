@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field
@@ -34,6 +36,9 @@ class TaskSpecModel(BaseModel):
     task_id: str = "native.survive"
     version: str = "1.0.0"
     params: Dict[str, Any] = Field(default_factory=dict)
+    dependencies: List[str] = Field(
+        default_factory=list, description="前置任务 task_id（严格依赖）"
+    )
 
 
 class FrameSampleModel(BaseModel):
@@ -50,7 +55,12 @@ class RecordingModel(BaseModel):
     dataset_run_id: str = "default"
     frame_sample: FrameSampleModel = Field(default_factory=FrameSampleModel)
     gold_frames: bool = False
-    spool_dir: str = "spool"
+    spool_dir: str = Field(
+        default_factory=lambda: os.environ.get(
+            "CRAFTAX_DATA_DIR",
+            str(Path(__file__).resolve().parent.parent.parent / "data"),
+        )
+    )
 
 
 class RenderModel(BaseModel):
@@ -134,11 +144,17 @@ class StateSummaryModel(BaseModel):
     is_resting: bool
     inventory: Dict[str, Any] = Field(default_factory=dict)
     achievements: List[str] = Field(default_factory=list)
+    sword_enchantment: int = 0
+    bow_enchantment: int = 0
+    armour_enchantments: List[int] = Field(default_factory=lambda: [0, 0, 0, 0])
+    learned_spells: List[bool] = Field(default_factory=lambda: [False, False])
     task_progress: float = 0.0
     task_done: bool = False
     instruction: str = ""
     task_id: str = ""
     task_version: str = ""
+    player_position: List[int] = Field(default_factory=lambda: [0, 0])
+    player_direction: int = 0
 
 
 class SnapshotResponse(BaseModel):

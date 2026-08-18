@@ -62,6 +62,24 @@ python scripts/demos/demo_dataset.py --latest --window 8 --export data/webdatase
 读取最新 shard：episode 摘要、视频帧对齐校验、VLA/World Model 窗口样本，
 可选导出 WebDataset tar（`<episode_id>.mp4 + .json + .actions.json`）。
 
+## 5. 任务依赖图与分级任务
+
+```bash
+# 实时从 registry 构建 92 个任务的静态图：统计/DAG 校验/类别/拓扑与语义层级/依赖链
+python scripts/demos/demo_task_graph.py
+
+# 展开某个根目标的前置依赖树
+python scripts/demos/demo_task_graph.py --tree native.conquer_dungeon_bosses
+
+# 打印静态产物 craftax/tasks/task_graph.json
+python scripts/demos/demo_task_graph.py --json
+```
+
+背景：77 个基础任务 + 15 个由并发子 agent 提议的分级复合任务
+（`craftax/tasks/builtin/hierarchy_tasks.py`），按 `TaskSpec.dependencies`
+构建 DAG，`TaskGraph` 提供拓扑层级、语义层级（atomic/composite/root_goal）与
+前置闭包，供后续 runtime planner（survey/滚动规划）消费。
+
 ## 建议顺序
 
 ```bash

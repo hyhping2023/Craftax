@@ -3,7 +3,7 @@
 用法：
     python scripts/demos/demo_record.py --steps 40 --seed 2026
     python scripts/demos/demo_record.py --task native.collect_wood --run-id demo-001
-输出：data/spool/<run-id>/ 下的 sealed shard（已 gitignore）。
+输出：<CRAFTAX_DATA_DIR 或 <仓库根>/data>/<run-id>/ 下的 sealed shard。
 """
 import argparse
 import json
@@ -18,6 +18,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from craftax.craftax.constants import Action  # noqa: E402
+from craftax.contracts import default_data_dir  # noqa: E402
 
 
 def post(base: str, path: str, body: dict, timeout: int = 120) -> dict:
@@ -91,7 +92,7 @@ def main() -> None:
                 "dataset_run_id": args.run_id,
                 "frame_sample": {"step_rate_hz": 20, "video_fps": 10},
                 "gold_frames": args.gold_frames,
-                "spool_dir": str(PROJECT_ROOT / "data" / "spool"),
+                "spool_dir": default_data_dir(),
             },
             "max_timesteps": args.steps,
             "god_mode": args.god_mode,
@@ -126,7 +127,7 @@ def main() -> None:
     print(f"[3] delete session -> {code}")
 
     # 4. 等待 sealed shard
-    run_dir = PROJECT_ROOT / "data" / "spool" / args.run_id
+    run_dir = Path(default_data_dir()) / args.run_id
     manifests: list[Path] = []
     deadline = time.time() + 90
     while time.time() < deadline and run_dir.exists():

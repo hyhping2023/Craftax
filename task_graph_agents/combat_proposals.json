@@ -1,0 +1,113 @@
+{
+  "category": "combat",
+  "semantic_levels": {
+    "native.damage_necromancer": "atomic",
+    "native.defeat_archer": "atomic",
+    "native.defeat_elemental": "composite",
+    "native.defeat_gnome_archer": "atomic",
+    "native.defeat_gnome_warrior": "atomic",
+    "native.defeat_knight": "atomic",
+    "native.defeat_kobold": "atomic",
+    "native.defeat_necromancer": "atomic",
+    "native.defeat_orc_mage": "atomic",
+    "native.defeat_orc_soldier": "atomic",
+    "native.defeat_skeleton": "atomic",
+    "native.defeat_three_enemies": "composite",
+    "native.defeat_troll": "atomic",
+    "native.defeat_undead": "composite",
+    "native.defeat_zombie": "atomic",
+    "native.clear_surface_threats": "composite",
+    "native.conquer_mid_tier_foes": "composite",
+    "native.conquer_dungeon_bosses": "root_goal"
+  },
+  "proposed_tasks": [
+    {
+      "task_id": "native.clear_surface_threats",
+      "instruction_en": "Clear the surface threats. Defeat both a zombie and a skeleton.",
+      "instruction_zh": "清除地表威胁。分别击败一只僵尸和一只骷髅。",
+      "objective": "同时达成 DEFEAT_ZOMBIE 与 DEFEAT_SKELETON，清除地表最常见的两种夜间敌人，作为战斗类别的入门目标。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "DEFEAT_ZOMBIE"},
+          {"type": "achievement", "name": "DEFEAT_SKELETON"}
+        ]
+      },
+      "dependencies": ["native.defeat_zombie", "native.defeat_skeleton"],
+      "rationale": "僵尸与骷髅是游戏最早遭遇的地表敌人（zombie 只需 craft_wood_sword、skeleton 只需 enter_dungeon + wood sword，均为 topo level 3）。将二者以 and 组合为早期战斗验收目标，形成对两个原子任务的层级聚合。"
+    },
+    {
+      "task_id": "native.conquer_mid_tier_foes",
+      "instruction_en": "Conquer the mid-tier dungeon foes. Defeat a gnome warrior, a gnome archer, an orc soldier, an orc mage, and a kobold.",
+      "instruction_zh": "征服中期地牢敌人。分别击败侏儒战士、侏儒弓箭手、兽人士兵、兽人法师和狗头人。",
+      "objective": "同时达成 DEFEAT_GNOME_WARRIOR、DEFEAT_GNOME_ARCHER、DEFEAT_ORC_SOLIDER、DEFEAT_ORC_MAGE 与 DEFEAT_KOBOLD，覆盖 gnomish mines 与 sewers 两层的全部敌人，作为中期战斗阶段验收。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "DEFEAT_GNOME_WARRIOR"},
+          {"type": "achievement", "name": "DEFEAT_GNOME_ARCHER"},
+          {"type": "achievement", "name": "DEFEAT_ORC_SOLIDER"},
+          {"type": "achievement", "name": "DEFEAT_ORC_MAGE"},
+          {"type": "achievement", "name": "DEFEAT_KOBOLD"}
+        ]
+      },
+      "dependencies": [
+        "native.defeat_gnome_warrior",
+        "native.defeat_gnome_archer",
+        "native.defeat_orc_soldier",
+        "native.defeat_orc_mage",
+        "native.defeat_kobold"
+      ],
+      "rationale": "这五个敌人全部位于 topo level 5，且共享相同前置（enter_gnomish_mines / enter_sewers + craft_stone_sword），是中期战斗能力的统一验收。以 and 组合为复合目标，保持与各 defeat_* 任务的分层关系。"
+    },
+    {
+      "task_id": "native.conquer_dungeon_bosses",
+      "instruction_en": "Conquer the dungeon bosses. Defeat a troll, a knight, and the necromancer boss.",
+      "instruction_zh": "征服地下城 Boss。击败巨魔、骑士与亡灵法师 Boss。",
+      "objective": "同时达成 DEFEAT_TROLL、DEFEAT_KNIGHT 与 DEFEAT_NECROMANCER，击败后期最强敌人，作为 combat 类别的终极（root）目标。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "DEFEAT_TROLL"},
+          {"type": "achievement", "name": "DEFEAT_KNIGHT"},
+          {"type": "achievement", "name": "DEFEAT_NECROMANCER"}
+        ]
+      },
+      "dependencies": ["native.defeat_troll", "native.defeat_knight", "native.defeat_necromancer"],
+      "rationale": "troll（troll mines，topo 7）、knight（vault 精英，topo 7）与 necromancer（graveyard 最终 Boss，topo 9）是游戏中后期三大强敌，均需铁/钻石剑及对应楼层探索。将它们聚合为 root_goal，可作为 combat 类别整体进度与排名的顶层目标。"
+    }
+  ],
+  "anomalies": [
+    {
+      "task_id": "native.defeat_three_enemies",
+      "issue": "success_predicate 的 or 分支覆盖了全部 17 个击杀成就，但 category 只有 15 个任务：DEFEAT_LIZARD、DEFEAT_DEEP_THING、DEFEAT_PIGMAN 这三个成就在枚举中存在却没有任何独立的 defeat_* 任务，只能通过该复合任务间接达成，无法被其它任务引用为依赖。",
+      "suggestion": "补充 native.defeat_lizard / native.defeat_deep_thing / native.defeat_pigman 三个原子任务，或在文档中明确这三类敌人仅由 composite 覆盖、不计入独立依赖图。"
+    },
+    {
+      "task_id": "native.defeat_undead",
+      "issue": "谓词允许 zombie/skeleton/necromancer 任意二者满足，但 dependencies 只包含 defeat_zombie 与 defeat_skeleton；若玩家经由 necromancer 路径达成，前置（enter_graveyard + craft_diamond_sword，topo 9）未编码进依赖图。",
+      "suggestion": "将 native.defeat_necromancer 加入 dependencies，或把谓词限定为地表两种亡灵（zombie+skeleton）。"
+    },
+    {
+      "task_id": "native.defeat_elemental",
+      "issue": "任务名 'elemental' 与谓词中的 DEFEAT_FROST_TROLL 语义不一致：frost troll 是 ice realm 的近战怪而非元素生物（fire/ice elemental 才是 ranged 元素）。",
+      "suggestion": "更名为 native.defeat_ice_realm_threats 或将其拆分，避免把近战霜巨魔归类为元素。"
+    },
+    {
+      "task_id": "native.defeat_necromancer",
+      "issue": "damage_necromancer 与 defeat_necromancer 依赖完全相同（enter_graveyard + craft_diamond_sword）且 topo level 相同，但 defeat_necromancer 未将 damage_necromancer 列为前置；'伤害' 在语义上先于 '击杀'。",
+      "suggestion": "在 defeat_necromancer 的 dependencies 中加入 native.damage_necromancer。"
+    },
+    {
+      "task_id": "native.defeat_three_enemies",
+      "issue": "dependencies 只列出最早的三个敌人（zombie/skeleton/gnome_warrior），但谓词可包含后期敌人（如 DEFEAT_NECROMANCER、DEFEAT_ICE_ELEMENTAL），依赖图对其达成路径欠约束。",
+      "suggestion": "扩充 dependencies 覆盖全部 15 个原子 defeat 任务，或将任务语义明确为 '仅统计已解锁的敌人类型'。"
+    },
+    {
+      "task_id": "native.defeat_orc_soldier",
+      "issue": "Achievement 枚举中为 DEFEAT_ORC_SOLIDER（缺少字母 i 的拼写错误），任务谓词已正确沿用该拼写；属上游枚举笔误，必须保持完全一致以避免解析失败。",
+      "suggestion": "保留 DEFEAT_ORC_SOLIDER 拼写；如允许可考虑在上游修正枚举并同步全部任务定义。"
+    }
+  ],
+  "rationale": "combat 类别 15 个任务中 12 个为单成就原子任务，3 个为复合任务：defeat_undead（or-of-and-pairs，zombie/skeleton/necromancer 任取二）、defeat_elemental（or，fire/frost/ice 元素任取一）、defeat_three_enemies（or-of-and-triples，17 个击杀成就任取三）。所有 defeat_* 均遵循既有约定：楼层敌人依赖对应 enter_* 探索任务与武器锻造（craft_*_sword），dependencies 承载跨任务前置、success_predicate 组合 achievement 谓词。本方案提出 3 个新任务构建分层：clear_surface_threats（zombie+skeleton，地表入门）、conquer_mid_tier_foes（topo-5 五敌人，中期验收）、conquer_dungeon_bosses（troll+knight+necromancer，root_goal 终极目标）。主要异常是 3 个击杀成就（LIZARD/DEEP_THING/PIGMAN）没有独立任务，以及若干依赖边缺失（necromancer 击杀未依赖伤害、undead/three_enemies 依赖未覆盖谓词全部路径）。"
+}

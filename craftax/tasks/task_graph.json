@@ -1,0 +1,1766 @@
+{
+  "schema_version": "1",
+  "node_count": 92,
+  "edge_count": 175,
+  "ok": true,
+  "categories": {
+    "native": [
+      "native.basic_combat_training",
+      "native.collect_wood",
+      "native.craft_tools",
+      "native.defeat_enemy",
+      "native.dungeon_campaign",
+      "native.explore_dungeon",
+      "native.survival_starter_kit",
+      "native.survive"
+    ],
+    "exploration": [
+      "native.build_home_base",
+      "native.conquer_lower_realms",
+      "native.deep_explorer",
+      "native.enter_dungeon",
+      "native.enter_fire_realm",
+      "native.enter_gnomish_mines",
+      "native.enter_graveyard",
+      "native.enter_ice_realm",
+      "native.enter_sewers",
+      "native.enter_troll_mines",
+      "native.enter_vault",
+      "native.open_chest",
+      "native.place_furnace",
+      "native.place_plant",
+      "native.place_stone",
+      "native.place_table",
+      "native.place_torch",
+      "native.reach_boss_floor",
+      "native.reach_floor_3",
+      "native.reach_floor_5",
+      "native.reach_mid_dungeon",
+      "native.wake_up"
+    ],
+    "crafting": [
+      "native.cast_fireball",
+      "native.cast_iceball",
+      "native.craft_arrow",
+      "native.craft_diamond_armour",
+      "native.craft_diamond_pickaxe",
+      "native.craft_diamond_sword",
+      "native.craft_full_kit",
+      "native.craft_iron_armour",
+      "native.craft_iron_pickaxe",
+      "native.craft_iron_sword",
+      "native.craft_stone_pickaxe",
+      "native.craft_stone_sword",
+      "native.craft_torch",
+      "native.craft_wood_pickaxe",
+      "native.craft_wood_sword",
+      "native.crafting_mastery",
+      "native.enchant_armour",
+      "native.enchant_sword",
+      "native.find_bow",
+      "native.fire_bow",
+      "native.iron_gear",
+      "native.learn_fireball",
+      "native.learn_iceball",
+      "native.master_crafter",
+      "native.starter_toolkit"
+    ],
+    "combat": [
+      "native.clear_surface_threats",
+      "native.conquer_dungeon_bosses",
+      "native.conquer_mid_tier_foes",
+      "native.damage_necromancer",
+      "native.defeat_archer",
+      "native.defeat_elemental",
+      "native.defeat_gnome_archer",
+      "native.defeat_gnome_warrior",
+      "native.defeat_knight",
+      "native.defeat_kobold",
+      "native.defeat_necromancer",
+      "native.defeat_orc_mage",
+      "native.defeat_orc_soldier",
+      "native.defeat_skeleton",
+      "native.defeat_three_enemies",
+      "native.defeat_troll",
+      "native.defeat_undead",
+      "native.defeat_zombie"
+    ],
+    "collect": [
+      "native.collect_all_gems",
+      "native.collect_all_ores",
+      "native.collect_all_primary_resources",
+      "native.collect_coal",
+      "native.collect_diamond",
+      "native.collect_drink",
+      "native.collect_iron",
+      "native.collect_ore",
+      "native.collect_ruby",
+      "native.collect_sapling",
+      "native.collect_sapphire",
+      "native.collect_stone",
+      "native.drink_potion",
+      "native.eat_bat",
+      "native.eat_cow",
+      "native.eat_food",
+      "native.eat_plant",
+      "native.eat_snail",
+      "native.survival_sustenance"
+    ]
+  },
+  "nodes": {
+    "native.basic_combat_training": {
+      "task_id": "native.basic_combat_training",
+      "version": "1.0.0",
+      "category": "native",
+      "success_type": "and",
+      "achievements": [
+        "MAKE_WOOD_SWORD",
+        "DEFEAT_ZOMBIE",
+        "DEFEAT_SKELETON",
+        "DEFEAT_GNOME_WARRIOR",
+        "DEFEAT_GNOME_ARCHER",
+        "DEFEAT_ORC_SOLIDER",
+        "DEFEAT_ORC_MAGE",
+        "DEFEAT_LIZARD",
+        "DEFEAT_KOBOLD",
+        "DEFEAT_TROLL",
+        "DEFEAT_DEEP_THING",
+        "DEFEAT_PIGMAN",
+        "DEFEAT_FIRE_ELEMENTAL",
+        "DEFEAT_FROST_TROLL",
+        "DEFEAT_ICE_ELEMENTAL",
+        "DEFEAT_NECROMANCER"
+      ],
+      "dependencies": [
+        "native.craft_wood_sword",
+        "native.defeat_enemy"
+      ],
+      "topological_level": 4,
+      "semantic_level": "composite"
+    },
+    "native.build_home_base": {
+      "task_id": "native.build_home_base",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "and",
+      "achievements": [
+        "PLACE_TABLE",
+        "PLACE_FURNACE",
+        "PLACE_TORCH"
+      ],
+      "dependencies": [
+        "native.place_table",
+        "native.place_furnace",
+        "native.place_torch"
+      ],
+      "topological_level": 6,
+      "semantic_level": "composite"
+    },
+    "native.cast_fireball": {
+      "task_id": "native.cast_fireball",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "CAST_FIREBALL"
+      ],
+      "dependencies": [
+        "native.learn_fireball"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.cast_iceball": {
+      "task_id": "native.cast_iceball",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "CAST_ICEBALL"
+      ],
+      "dependencies": [
+        "native.learn_iceball"
+      ],
+      "topological_level": 8,
+      "semantic_level": "atomic"
+    },
+    "native.clear_surface_threats": {
+      "task_id": "native.clear_surface_threats",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "and",
+      "achievements": [
+        "DEFEAT_ZOMBIE",
+        "DEFEAT_SKELETON"
+      ],
+      "dependencies": [
+        "native.defeat_zombie",
+        "native.defeat_skeleton"
+      ],
+      "topological_level": 4,
+      "semantic_level": "composite"
+    },
+    "native.collect_all_gems": {
+      "task_id": "native.collect_all_gems",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "and",
+      "achievements": [
+        "COLLECT_SAPPHIRE",
+        "COLLECT_RUBY"
+      ],
+      "dependencies": [
+        "native.collect_sapphire",
+        "native.collect_ruby"
+      ],
+      "topological_level": 10,
+      "semantic_level": "composite"
+    },
+    "native.collect_all_ores": {
+      "task_id": "native.collect_all_ores",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "and",
+      "achievements": [
+        "COLLECT_COAL",
+        "COLLECT_IRON",
+        "COLLECT_DIAMOND",
+        "COLLECT_SAPPHIRE",
+        "COLLECT_RUBY"
+      ],
+      "dependencies": [
+        "native.collect_coal",
+        "native.collect_iron",
+        "native.collect_diamond",
+        "native.collect_sapphire",
+        "native.collect_ruby",
+        "native.craft_diamond_pickaxe"
+      ],
+      "topological_level": 10,
+      "semantic_level": "composite"
+    },
+    "native.collect_all_primary_resources": {
+      "task_id": "native.collect_all_primary_resources",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "and",
+      "achievements": [
+        "COLLECT_WOOD",
+        "COLLECT_STONE",
+        "COLLECT_COAL",
+        "COLLECT_IRON",
+        "COLLECT_DIAMOND"
+      ],
+      "dependencies": [
+        "native.collect_wood",
+        "native.collect_stone",
+        "native.collect_coal",
+        "native.collect_iron",
+        "native.collect_diamond",
+        "native.craft_iron_pickaxe"
+      ],
+      "topological_level": 8,
+      "semantic_level": "composite"
+    },
+    "native.collect_coal": {
+      "task_id": "native.collect_coal",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_COAL"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe"
+      ],
+      "topological_level": 3,
+      "semantic_level": "atomic"
+    },
+    "native.collect_diamond": {
+      "task_id": "native.collect_diamond",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_DIAMOND"
+      ],
+      "dependencies": [
+        "native.craft_iron_pickaxe"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.collect_drink": {
+      "task_id": "native.collect_drink",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_DRINK"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.collect_iron": {
+      "task_id": "native.collect_iron",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_IRON"
+      ],
+      "dependencies": [
+        "native.craft_stone_pickaxe"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.collect_ore": {
+      "task_id": "native.collect_ore",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "or",
+      "achievements": [
+        "COLLECT_COAL",
+        "COLLECT_IRON",
+        "COLLECT_DIAMOND",
+        "COLLECT_SAPPHIRE",
+        "COLLECT_RUBY"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe"
+      ],
+      "topological_level": 3,
+      "semantic_level": "composite"
+    },
+    "native.collect_ruby": {
+      "task_id": "native.collect_ruby",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_RUBY"
+      ],
+      "dependencies": [
+        "native.craft_diamond_pickaxe",
+        "native.enter_troll_mines"
+      ],
+      "topological_level": 9,
+      "semantic_level": "atomic"
+    },
+    "native.collect_sapling": {
+      "task_id": "native.collect_sapling",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_SAPLING"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.collect_sapphire": {
+      "task_id": "native.collect_sapphire",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_SAPPHIRE"
+      ],
+      "dependencies": [
+        "native.craft_diamond_pickaxe",
+        "native.enter_vault"
+      ],
+      "topological_level": 9,
+      "semantic_level": "atomic"
+    },
+    "native.collect_stone": {
+      "task_id": "native.collect_stone",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_STONE"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe"
+      ],
+      "topological_level": 3,
+      "semantic_level": "atomic"
+    },
+    "native.collect_wood": {
+      "task_id": "native.collect_wood",
+      "version": "1.0.0",
+      "category": "native",
+      "success_type": "achievement",
+      "achievements": [
+        "COLLECT_WOOD"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.conquer_dungeon_bosses": {
+      "task_id": "native.conquer_dungeon_bosses",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "and",
+      "achievements": [
+        "DEFEAT_TROLL",
+        "DEFEAT_KNIGHT",
+        "DEFEAT_NECROMANCER"
+      ],
+      "dependencies": [
+        "native.defeat_troll",
+        "native.defeat_knight",
+        "native.defeat_necromancer"
+      ],
+      "topological_level": 10,
+      "semantic_level": "root_goal"
+    },
+    "native.conquer_lower_realms": {
+      "task_id": "native.conquer_lower_realms",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "and",
+      "achievements": [
+        "ENTER_TROLL_MINES",
+        "ENTER_FIRE_REALM",
+        "ENTER_ICE_REALM"
+      ],
+      "dependencies": [
+        "native.enter_troll_mines",
+        "native.enter_fire_realm",
+        "native.enter_ice_realm"
+      ],
+      "topological_level": 7,
+      "semantic_level": "composite"
+    },
+    "native.conquer_mid_tier_foes": {
+      "task_id": "native.conquer_mid_tier_foes",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "and",
+      "achievements": [
+        "DEFEAT_GNOME_WARRIOR",
+        "DEFEAT_GNOME_ARCHER",
+        "DEFEAT_ORC_SOLIDER",
+        "DEFEAT_ORC_MAGE",
+        "DEFEAT_KOBOLD"
+      ],
+      "dependencies": [
+        "native.defeat_gnome_warrior",
+        "native.defeat_gnome_archer",
+        "native.defeat_orc_soldier",
+        "native.defeat_orc_mage",
+        "native.defeat_kobold"
+      ],
+      "topological_level": 6,
+      "semantic_level": "composite"
+    },
+    "native.craft_arrow": {
+      "task_id": "native.craft_arrow",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_ARROW"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.collect_stone",
+        "native.collect_wood"
+      ],
+      "topological_level": 4,
+      "semantic_level": "atomic"
+    },
+    "native.craft_diamond_armour": {
+      "task_id": "native.craft_diamond_armour",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_DIAMOND_ARMOUR"
+      ],
+      "dependencies": [
+        "native.craft_iron_pickaxe",
+        "native.collect_diamond",
+        "native.place_furnace",
+        "native.place_table"
+      ],
+      "topological_level": 8,
+      "semantic_level": "atomic"
+    },
+    "native.craft_diamond_pickaxe": {
+      "task_id": "native.craft_diamond_pickaxe",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_DIAMOND_PICKAXE"
+      ],
+      "dependencies": [
+        "native.craft_iron_pickaxe",
+        "native.collect_diamond",
+        "native.place_table"
+      ],
+      "topological_level": 8,
+      "semantic_level": "atomic"
+    },
+    "native.craft_diamond_sword": {
+      "task_id": "native.craft_diamond_sword",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_DIAMOND_SWORD"
+      ],
+      "dependencies": [
+        "native.craft_iron_pickaxe",
+        "native.collect_diamond",
+        "native.place_table"
+      ],
+      "topological_level": 8,
+      "semantic_level": "atomic"
+    },
+    "native.craft_full_kit": {
+      "task_id": "native.craft_full_kit",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "and",
+      "achievements": [
+        "MAKE_WOOD_PICKAXE",
+        "MAKE_STONE_PICKAXE",
+        "MAKE_IRON_PICKAXE",
+        "MAKE_DIAMOND_PICKAXE",
+        "MAKE_WOOD_SWORD",
+        "MAKE_STONE_SWORD",
+        "MAKE_IRON_SWORD",
+        "MAKE_DIAMOND_SWORD",
+        "MAKE_IRON_ARMOUR",
+        "MAKE_DIAMOND_ARMOUR"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.craft_wood_sword",
+        "native.craft_iron_armour"
+      ],
+      "topological_level": 7,
+      "semantic_level": "composite"
+    },
+    "native.craft_iron_armour": {
+      "task_id": "native.craft_iron_armour",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_IRON_ARMOUR"
+      ],
+      "dependencies": [
+        "native.craft_stone_pickaxe",
+        "native.collect_iron",
+        "native.collect_coal",
+        "native.place_furnace",
+        "native.place_table"
+      ],
+      "topological_level": 6,
+      "semantic_level": "atomic"
+    },
+    "native.craft_iron_pickaxe": {
+      "task_id": "native.craft_iron_pickaxe",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_IRON_PICKAXE"
+      ],
+      "dependencies": [
+        "native.craft_stone_pickaxe",
+        "native.collect_iron",
+        "native.collect_coal",
+        "native.place_furnace",
+        "native.place_table"
+      ],
+      "topological_level": 6,
+      "semantic_level": "atomic"
+    },
+    "native.craft_iron_sword": {
+      "task_id": "native.craft_iron_sword",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_IRON_SWORD"
+      ],
+      "dependencies": [
+        "native.craft_stone_pickaxe",
+        "native.collect_iron",
+        "native.collect_coal",
+        "native.place_furnace",
+        "native.place_table"
+      ],
+      "topological_level": 6,
+      "semantic_level": "atomic"
+    },
+    "native.craft_stone_pickaxe": {
+      "task_id": "native.craft_stone_pickaxe",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_STONE_PICKAXE"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.collect_stone",
+        "native.place_table"
+      ],
+      "topological_level": 4,
+      "semantic_level": "atomic"
+    },
+    "native.craft_stone_sword": {
+      "task_id": "native.craft_stone_sword",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_STONE_SWORD"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.collect_stone",
+        "native.place_table"
+      ],
+      "topological_level": 4,
+      "semantic_level": "atomic"
+    },
+    "native.craft_tools": {
+      "task_id": "native.craft_tools",
+      "version": "1.0.0",
+      "category": "native",
+      "success_type": "or",
+      "achievements": [
+        "MAKE_WOOD_PICKAXE",
+        "MAKE_STONE_PICKAXE",
+        "MAKE_IRON_PICKAXE",
+        "MAKE_DIAMOND_PICKAXE"
+      ],
+      "dependencies": [
+        "native.collect_wood",
+        "native.place_table"
+      ],
+      "topological_level": 2,
+      "semantic_level": "composite"
+    },
+    "native.craft_torch": {
+      "task_id": "native.craft_torch",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_TORCH"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.collect_coal",
+        "native.collect_wood"
+      ],
+      "topological_level": 4,
+      "semantic_level": "atomic"
+    },
+    "native.craft_wood_pickaxe": {
+      "task_id": "native.craft_wood_pickaxe",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_WOOD_PICKAXE"
+      ],
+      "dependencies": [
+        "native.collect_wood",
+        "native.place_table"
+      ],
+      "topological_level": 2,
+      "semantic_level": "atomic"
+    },
+    "native.craft_wood_sword": {
+      "task_id": "native.craft_wood_sword",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "MAKE_WOOD_SWORD"
+      ],
+      "dependencies": [
+        "native.collect_wood",
+        "native.place_table"
+      ],
+      "topological_level": 2,
+      "semantic_level": "atomic"
+    },
+    "native.crafting_mastery": {
+      "task_id": "native.crafting_mastery",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "and",
+      "achievements": [
+        "MAKE_WOOD_PICKAXE",
+        "MAKE_STONE_PICKAXE",
+        "MAKE_IRON_PICKAXE",
+        "MAKE_DIAMOND_PICKAXE",
+        "MAKE_WOOD_SWORD",
+        "MAKE_STONE_SWORD",
+        "MAKE_IRON_SWORD",
+        "MAKE_DIAMOND_SWORD",
+        "MAKE_IRON_ARMOUR",
+        "MAKE_DIAMOND_ARMOUR"
+      ],
+      "dependencies": [
+        "native.master_crafter",
+        "native.craft_full_kit"
+      ],
+      "topological_level": 10,
+      "semantic_level": "root_goal"
+    },
+    "native.damage_necromancer": {
+      "task_id": "native.damage_necromancer",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DAMAGE_NECROMANCER"
+      ],
+      "dependencies": [
+        "native.enter_graveyard",
+        "native.craft_diamond_sword"
+      ],
+      "topological_level": 9,
+      "semantic_level": "atomic"
+    },
+    "native.deep_explorer": {
+      "task_id": "native.deep_explorer",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "and",
+      "achievements": [
+        "ENTER_SEWERS",
+        "ENTER_VAULT",
+        "ENTER_GRAVEYARD"
+      ],
+      "dependencies": [
+        "native.enter_sewers",
+        "native.enter_vault",
+        "native.enter_graveyard"
+      ],
+      "topological_level": 8,
+      "semantic_level": "composite"
+    },
+    "native.defeat_archer": {
+      "task_id": "native.defeat_archer",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_ARCHER"
+      ],
+      "dependencies": [
+        "native.enter_vault",
+        "native.craft_iron_sword"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_elemental": {
+      "task_id": "native.defeat_elemental",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "or",
+      "achievements": [
+        "DEFEAT_FIRE_ELEMENTAL",
+        "DEFEAT_FROST_TROLL",
+        "DEFEAT_ICE_ELEMENTAL"
+      ],
+      "dependencies": [
+        "native.enter_fire_realm",
+        "native.enter_ice_realm",
+        "native.craft_diamond_sword"
+      ],
+      "topological_level": 9,
+      "semantic_level": "composite"
+    },
+    "native.defeat_enemy": {
+      "task_id": "native.defeat_enemy",
+      "version": "1.0.0",
+      "category": "native",
+      "success_type": "or",
+      "achievements": [
+        "DEFEAT_ZOMBIE",
+        "DEFEAT_SKELETON",
+        "DEFEAT_GNOME_WARRIOR",
+        "DEFEAT_GNOME_ARCHER",
+        "DEFEAT_ORC_SOLIDER",
+        "DEFEAT_ORC_MAGE",
+        "DEFEAT_LIZARD",
+        "DEFEAT_KOBOLD",
+        "DEFEAT_TROLL",
+        "DEFEAT_DEEP_THING",
+        "DEFEAT_PIGMAN",
+        "DEFEAT_FIRE_ELEMENTAL",
+        "DEFEAT_FROST_TROLL",
+        "DEFEAT_ICE_ELEMENTAL",
+        "DEFEAT_NECROMANCER"
+      ],
+      "dependencies": [
+        "native.craft_wood_sword"
+      ],
+      "topological_level": 3,
+      "semantic_level": "composite"
+    },
+    "native.defeat_gnome_archer": {
+      "task_id": "native.defeat_gnome_archer",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_GNOME_ARCHER"
+      ],
+      "dependencies": [
+        "native.enter_gnomish_mines",
+        "native.craft_stone_sword"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_gnome_warrior": {
+      "task_id": "native.defeat_gnome_warrior",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_GNOME_WARRIOR"
+      ],
+      "dependencies": [
+        "native.enter_gnomish_mines",
+        "native.craft_stone_sword"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_knight": {
+      "task_id": "native.defeat_knight",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_KNIGHT"
+      ],
+      "dependencies": [
+        "native.enter_vault",
+        "native.craft_iron_sword"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_kobold": {
+      "task_id": "native.defeat_kobold",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_KOBOLD"
+      ],
+      "dependencies": [
+        "native.enter_sewers",
+        "native.craft_stone_sword"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_necromancer": {
+      "task_id": "native.defeat_necromancer",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_NECROMANCER"
+      ],
+      "dependencies": [
+        "native.enter_graveyard",
+        "native.craft_diamond_sword"
+      ],
+      "topological_level": 9,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_orc_mage": {
+      "task_id": "native.defeat_orc_mage",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_ORC_MAGE"
+      ],
+      "dependencies": [
+        "native.enter_sewers",
+        "native.craft_stone_sword"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_orc_soldier": {
+      "task_id": "native.defeat_orc_soldier",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_ORC_SOLIDER"
+      ],
+      "dependencies": [
+        "native.enter_sewers",
+        "native.craft_stone_sword"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_skeleton": {
+      "task_id": "native.defeat_skeleton",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_SKELETON"
+      ],
+      "dependencies": [
+        "native.enter_dungeon",
+        "native.craft_wood_sword"
+      ],
+      "topological_level": 3,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_three_enemies": {
+      "task_id": "native.defeat_three_enemies",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "or",
+      "achievements": [
+        "DEFEAT_ZOMBIE",
+        "DEFEAT_SKELETON",
+        "DEFEAT_GNOME_WARRIOR",
+        "DEFEAT_GNOME_ARCHER",
+        "DEFEAT_ORC_SOLIDER",
+        "DEFEAT_ORC_MAGE",
+        "DEFEAT_LIZARD",
+        "DEFEAT_KOBOLD",
+        "DEFEAT_TROLL",
+        "DEFEAT_DEEP_THING",
+        "DEFEAT_PIGMAN",
+        "DEFEAT_FIRE_ELEMENTAL",
+        "DEFEAT_FROST_TROLL",
+        "DEFEAT_ICE_ELEMENTAL",
+        "DEFEAT_NECROMANCER",
+        "DEFEAT_KNIGHT",
+        "DEFEAT_ARCHER"
+      ],
+      "dependencies": [
+        "native.defeat_zombie",
+        "native.defeat_skeleton",
+        "native.defeat_gnome_warrior"
+      ],
+      "topological_level": 6,
+      "semantic_level": "composite"
+    },
+    "native.defeat_troll": {
+      "task_id": "native.defeat_troll",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_TROLL"
+      ],
+      "dependencies": [
+        "native.enter_troll_mines",
+        "native.craft_iron_sword"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.defeat_undead": {
+      "task_id": "native.defeat_undead",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "or",
+      "achievements": [
+        "DEFEAT_ZOMBIE",
+        "DEFEAT_SKELETON",
+        "DEFEAT_NECROMANCER"
+      ],
+      "dependencies": [
+        "native.defeat_zombie",
+        "native.defeat_skeleton"
+      ],
+      "topological_level": 4,
+      "semantic_level": "composite"
+    },
+    "native.defeat_zombie": {
+      "task_id": "native.defeat_zombie",
+      "version": "1.0.0",
+      "category": "combat",
+      "success_type": "achievement",
+      "achievements": [
+        "DEFEAT_ZOMBIE"
+      ],
+      "dependencies": [
+        "native.craft_wood_sword"
+      ],
+      "topological_level": 3,
+      "semantic_level": "atomic"
+    },
+    "native.drink_potion": {
+      "task_id": "native.drink_potion",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "DRINK_POTION"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.dungeon_campaign": {
+      "task_id": "native.dungeon_campaign",
+      "version": "1.0.0",
+      "category": "native",
+      "success_type": "and",
+      "achievements": [
+        "COLLECT_WOOD",
+        "MAKE_WOOD_PICKAXE",
+        "MAKE_STONE_PICKAXE",
+        "MAKE_IRON_PICKAXE",
+        "MAKE_DIAMOND_PICKAXE",
+        "DEFEAT_ZOMBIE",
+        "DEFEAT_SKELETON",
+        "DEFEAT_GNOME_WARRIOR",
+        "DEFEAT_GNOME_ARCHER",
+        "DEFEAT_ORC_SOLIDER",
+        "DEFEAT_ORC_MAGE",
+        "DEFEAT_LIZARD",
+        "DEFEAT_KOBOLD",
+        "DEFEAT_TROLL",
+        "DEFEAT_DEEP_THING",
+        "DEFEAT_PIGMAN",
+        "DEFEAT_FIRE_ELEMENTAL",
+        "DEFEAT_FROST_TROLL",
+        "DEFEAT_ICE_ELEMENTAL",
+        "DEFEAT_NECROMANCER"
+      ],
+      "dependencies": [
+        "native.collect_wood",
+        "native.craft_tools",
+        "native.defeat_enemy",
+        "native.explore_dungeon"
+      ],
+      "topological_level": 4,
+      "semantic_level": "composite"
+    },
+    "native.eat_bat": {
+      "task_id": "native.eat_bat",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "EAT_BAT"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.eat_cow": {
+      "task_id": "native.eat_cow",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "EAT_COW"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.eat_food": {
+      "task_id": "native.eat_food",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "or",
+      "achievements": [
+        "EAT_COW",
+        "EAT_PLANT",
+        "EAT_BAT",
+        "EAT_SNAIL"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "composite"
+    },
+    "native.eat_plant": {
+      "task_id": "native.eat_plant",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "EAT_PLANT"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.eat_snail": {
+      "task_id": "native.eat_snail",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "achievement",
+      "achievements": [
+        "EAT_SNAIL"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.enchant_armour": {
+      "task_id": "native.enchant_armour",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "ENCHANT_ARMOUR"
+      ],
+      "dependencies": [
+        "native.craft_iron_armour",
+        "native.enter_fire_realm",
+        "native.enter_ice_realm"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.enchant_sword": {
+      "task_id": "native.enchant_sword",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "ENCHANT_SWORD"
+      ],
+      "dependencies": [
+        "native.craft_stone_sword",
+        "native.enter_fire_realm",
+        "native.enter_ice_realm"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.enter_dungeon": {
+      "task_id": "native.enter_dungeon",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "ENTER_DUNGEON"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.enter_fire_realm": {
+      "task_id": "native.enter_fire_realm",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "ENTER_FIRE_REALM"
+      ],
+      "dependencies": [
+        "native.enter_troll_mines"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.enter_gnomish_mines": {
+      "task_id": "native.enter_gnomish_mines",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "ENTER_GNOMISH_MINES"
+      ],
+      "dependencies": [
+        "native.enter_dungeon"
+      ],
+      "topological_level": 1,
+      "semantic_level": "atomic"
+    },
+    "native.enter_graveyard": {
+      "task_id": "native.enter_graveyard",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "ENTER_GRAVEYARD"
+      ],
+      "dependencies": [
+        "native.enter_ice_realm"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.enter_ice_realm": {
+      "task_id": "native.enter_ice_realm",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "ENTER_ICE_REALM"
+      ],
+      "dependencies": [
+        "native.enter_fire_realm"
+      ],
+      "topological_level": 6,
+      "semantic_level": "atomic"
+    },
+    "native.enter_sewers": {
+      "task_id": "native.enter_sewers",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "ENTER_SEWERS"
+      ],
+      "dependencies": [
+        "native.enter_gnomish_mines"
+      ],
+      "topological_level": 2,
+      "semantic_level": "atomic"
+    },
+    "native.enter_troll_mines": {
+      "task_id": "native.enter_troll_mines",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "ENTER_TROLL_MINES"
+      ],
+      "dependencies": [
+        "native.enter_vault"
+      ],
+      "topological_level": 4,
+      "semantic_level": "atomic"
+    },
+    "native.enter_vault": {
+      "task_id": "native.enter_vault",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "ENTER_VAULT"
+      ],
+      "dependencies": [
+        "native.enter_sewers"
+      ],
+      "topological_level": 3,
+      "semantic_level": "atomic"
+    },
+    "native.explore_dungeon": {
+      "task_id": "native.explore_dungeon",
+      "version": "1.0.0",
+      "category": "native",
+      "success_type": "level_ge",
+      "achievements": [],
+      "dependencies": [
+        "native.enter_dungeon"
+      ],
+      "topological_level": 1,
+      "semantic_level": "root_goal"
+    },
+    "native.find_bow": {
+      "task_id": "native.find_bow",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "FIND_BOW"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.fire_bow": {
+      "task_id": "native.fire_bow",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "FIRE_BOW"
+      ],
+      "dependencies": [
+        "native.find_bow",
+        "native.craft_arrow"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.iron_gear": {
+      "task_id": "native.iron_gear",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "and",
+      "achievements": [
+        "MAKE_IRON_PICKAXE",
+        "MAKE_IRON_SWORD",
+        "MAKE_IRON_ARMOUR"
+      ],
+      "dependencies": [
+        "native.craft_iron_pickaxe",
+        "native.craft_iron_sword",
+        "native.craft_iron_armour"
+      ],
+      "topological_level": 7,
+      "semantic_level": "composite"
+    },
+    "native.learn_fireball": {
+      "task_id": "native.learn_fireball",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "LEARN_FIREBALL"
+      ],
+      "dependencies": [
+        "native.open_chest",
+        "native.enter_fire_realm"
+      ],
+      "topological_level": 6,
+      "semantic_level": "atomic"
+    },
+    "native.learn_iceball": {
+      "task_id": "native.learn_iceball",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "achievement",
+      "achievements": [
+        "LEARN_ICEBALL"
+      ],
+      "dependencies": [
+        "native.open_chest",
+        "native.enter_ice_realm"
+      ],
+      "topological_level": 7,
+      "semantic_level": "atomic"
+    },
+    "native.master_crafter": {
+      "task_id": "native.master_crafter",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "and",
+      "achievements": [
+        "MAKE_WOOD_PICKAXE",
+        "MAKE_STONE_PICKAXE",
+        "MAKE_IRON_PICKAXE",
+        "MAKE_DIAMOND_PICKAXE"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.craft_stone_pickaxe",
+        "native.craft_iron_pickaxe",
+        "native.craft_diamond_pickaxe"
+      ],
+      "topological_level": 9,
+      "semantic_level": "composite"
+    },
+    "native.open_chest": {
+      "task_id": "native.open_chest",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "OPEN_CHEST"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    },
+    "native.place_furnace": {
+      "task_id": "native.place_furnace",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "PLACE_FURNACE"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe"
+      ],
+      "topological_level": 3,
+      "semantic_level": "atomic"
+    },
+    "native.place_plant": {
+      "task_id": "native.place_plant",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "PLACE_PLANT"
+      ],
+      "dependencies": [
+        "native.collect_sapling"
+      ],
+      "topological_level": 1,
+      "semantic_level": "atomic"
+    },
+    "native.place_stone": {
+      "task_id": "native.place_stone",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "PLACE_STONE"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe"
+      ],
+      "topological_level": 3,
+      "semantic_level": "atomic"
+    },
+    "native.place_table": {
+      "task_id": "native.place_table",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "PLACE_TABLE"
+      ],
+      "dependencies": [
+        "native.collect_wood"
+      ],
+      "topological_level": 1,
+      "semantic_level": "atomic"
+    },
+    "native.place_torch": {
+      "task_id": "native.place_torch",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "PLACE_TORCH"
+      ],
+      "dependencies": [
+        "native.craft_torch"
+      ],
+      "topological_level": 5,
+      "semantic_level": "atomic"
+    },
+    "native.reach_boss_floor": {
+      "task_id": "native.reach_boss_floor",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "level_ge",
+      "achievements": [],
+      "dependencies": [
+        "native.enter_graveyard"
+      ],
+      "topological_level": 8,
+      "semantic_level": "root_goal"
+    },
+    "native.reach_floor_3": {
+      "task_id": "native.reach_floor_3",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "level_ge",
+      "achievements": [],
+      "dependencies": [
+        "native.enter_sewers"
+      ],
+      "topological_level": 3,
+      "semantic_level": "root_goal"
+    },
+    "native.reach_floor_5": {
+      "task_id": "native.reach_floor_5",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "level_ge",
+      "achievements": [],
+      "dependencies": [
+        "native.enter_troll_mines"
+      ],
+      "topological_level": 5,
+      "semantic_level": "root_goal"
+    },
+    "native.reach_mid_dungeon": {
+      "task_id": "native.reach_mid_dungeon",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "and",
+      "achievements": [
+        "ENTER_SEWERS",
+        "ENTER_VAULT"
+      ],
+      "dependencies": [
+        "native.enter_sewers",
+        "native.enter_vault"
+      ],
+      "topological_level": 4,
+      "semantic_level": "composite"
+    },
+    "native.starter_toolkit": {
+      "task_id": "native.starter_toolkit",
+      "version": "1.0.0",
+      "category": "crafting",
+      "success_type": "and",
+      "achievements": [
+        "MAKE_WOOD_PICKAXE",
+        "MAKE_WOOD_SWORD",
+        "MAKE_TORCH",
+        "MAKE_ARROW"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.craft_wood_sword",
+        "native.craft_torch",
+        "native.craft_arrow"
+      ],
+      "topological_level": 5,
+      "semantic_level": "composite"
+    },
+    "native.survival_starter_kit": {
+      "task_id": "native.survival_starter_kit",
+      "version": "1.0.0",
+      "category": "native",
+      "success_type": "and",
+      "achievements": [
+        "COLLECT_WOOD",
+        "MAKE_WOOD_PICKAXE",
+        "MAKE_STONE_PICKAXE",
+        "MAKE_IRON_PICKAXE",
+        "MAKE_DIAMOND_PICKAXE"
+      ],
+      "dependencies": [
+        "native.collect_wood",
+        "native.craft_tools"
+      ],
+      "topological_level": 3,
+      "semantic_level": "composite"
+    },
+    "native.survival_sustenance": {
+      "task_id": "native.survival_sustenance",
+      "version": "1.0.0",
+      "category": "collect",
+      "success_type": "and",
+      "achievements": [
+        "COLLECT_DRINK",
+        "EAT_COW",
+        "EAT_PLANT",
+        "EAT_BAT",
+        "EAT_SNAIL"
+      ],
+      "dependencies": [
+        "native.collect_drink",
+        "native.eat_food"
+      ],
+      "topological_level": 1,
+      "semantic_level": "composite"
+    },
+    "native.survive": {
+      "task_id": "native.survive",
+      "version": "1.0.0",
+      "category": "native",
+      "success_type": "always",
+      "achievements": [],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "root_goal"
+    },
+    "native.wake_up": {
+      "task_id": "native.wake_up",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "achievement",
+      "achievements": [
+        "WAKE_UP"
+      ],
+      "dependencies": [],
+      "topological_level": 0,
+      "semantic_level": "atomic"
+    }
+  },
+  "semantic_overrides": {
+    "native.basic_combat_training": "composite",
+    "native.build_home_base": "composite",
+    "native.cast_fireball": "atomic",
+    "native.cast_iceball": "atomic",
+    "native.clear_surface_threats": "composite",
+    "native.collect_all_gems": "composite",
+    "native.collect_all_ores": "composite",
+    "native.collect_all_primary_resources": "composite",
+    "native.collect_coal": "atomic",
+    "native.collect_diamond": "atomic",
+    "native.collect_drink": "atomic",
+    "native.collect_iron": "atomic",
+    "native.collect_ore": "composite",
+    "native.collect_ruby": "atomic",
+    "native.collect_sapling": "atomic",
+    "native.collect_sapphire": "atomic",
+    "native.collect_stone": "atomic",
+    "native.collect_wood": "atomic",
+    "native.conquer_dungeon_bosses": "root_goal",
+    "native.conquer_lower_realms": "composite",
+    "native.conquer_mid_tier_foes": "composite",
+    "native.craft_arrow": "atomic",
+    "native.craft_diamond_armour": "atomic",
+    "native.craft_diamond_pickaxe": "atomic",
+    "native.craft_diamond_sword": "atomic",
+    "native.craft_full_kit": "composite",
+    "native.craft_iron_armour": "atomic",
+    "native.craft_iron_pickaxe": "atomic",
+    "native.craft_iron_sword": "atomic",
+    "native.craft_stone_pickaxe": "atomic",
+    "native.craft_stone_sword": "atomic",
+    "native.craft_tools": "composite",
+    "native.craft_torch": "atomic",
+    "native.craft_wood_pickaxe": "atomic",
+    "native.craft_wood_sword": "atomic",
+    "native.crafting_mastery": "root_goal",
+    "native.damage_necromancer": "atomic",
+    "native.deep_explorer": "composite",
+    "native.defeat_archer": "atomic",
+    "native.defeat_elemental": "composite",
+    "native.defeat_enemy": "composite",
+    "native.defeat_gnome_archer": "atomic",
+    "native.defeat_gnome_warrior": "atomic",
+    "native.defeat_knight": "atomic",
+    "native.defeat_kobold": "atomic",
+    "native.defeat_necromancer": "atomic",
+    "native.defeat_orc_mage": "atomic",
+    "native.defeat_orc_soldier": "atomic",
+    "native.defeat_skeleton": "atomic",
+    "native.defeat_three_enemies": "composite",
+    "native.defeat_troll": "atomic",
+    "native.defeat_undead": "composite",
+    "native.defeat_zombie": "atomic",
+    "native.drink_potion": "atomic",
+    "native.dungeon_campaign": "composite",
+    "native.eat_bat": "atomic",
+    "native.eat_cow": "atomic",
+    "native.eat_food": "composite",
+    "native.eat_plant": "atomic",
+    "native.eat_snail": "atomic",
+    "native.enchant_armour": "atomic",
+    "native.enchant_sword": "atomic",
+    "native.enter_dungeon": "atomic",
+    "native.enter_fire_realm": "atomic",
+    "native.enter_gnomish_mines": "atomic",
+    "native.enter_graveyard": "atomic",
+    "native.enter_ice_realm": "atomic",
+    "native.enter_sewers": "atomic",
+    "native.enter_troll_mines": "atomic",
+    "native.enter_vault": "atomic",
+    "native.explore_dungeon": "root_goal",
+    "native.find_bow": "atomic",
+    "native.fire_bow": "atomic",
+    "native.iron_gear": "composite",
+    "native.learn_fireball": "atomic",
+    "native.learn_iceball": "atomic",
+    "native.master_crafter": "composite",
+    "native.open_chest": "atomic",
+    "native.place_furnace": "atomic",
+    "native.place_plant": "atomic",
+    "native.place_stone": "atomic",
+    "native.place_table": "atomic",
+    "native.place_torch": "atomic",
+    "native.reach_boss_floor": "root_goal",
+    "native.reach_floor_3": "root_goal",
+    "native.reach_floor_5": "root_goal",
+    "native.reach_mid_dungeon": "composite",
+    "native.starter_toolkit": "composite",
+    "native.survival_starter_kit": "composite",
+    "native.survival_sustenance": "composite",
+    "native.survive": "root_goal",
+    "native.wake_up": "atomic"
+  },
+  "advisory": [
+    {
+      "task_id": "native.craft_tools",
+      "issue": "成功谓词要求任一镐成就，但 dependencies 未列出 native.craft_wood_pickaxe（只列 collect_wood/place_table）。",
+      "suggestion": "考虑补充依赖 native.craft_wood_pickaxe。"
+    },
+    {
+      "task_id": "native.place_furnace",
+      "issue": "放置熔炉需石头，但 dependencies 未含 native.collect_stone。",
+      "suggestion": "考虑补充依赖 native.collect_stone。"
+    },
+    {
+      "task_id": "native.place_stone",
+      "issue": "放置石头需先收集石头，但 dependencies 未含 native.collect_stone。",
+      "suggestion": "考虑补充依赖 native.collect_stone。"
+    },
+    {
+      "task_id": "native.defeat_enemy",
+      "issue": "成功谓词覆盖 15 种敌人，combat 模块单独任务覆盖 17 种（DEFEAT_KNIGHT/DEFEAT_ARCHER 未纳入）。",
+      "suggestion": "确认是否应把 KNIGHT/ARCHER 纳入 defeat_enemy。"
+    },
+    {
+      "task_id": "native.explore_dungeon",
+      "issue": "与 native.reach_boss_floor 语义重复（均为 level_ge 8）。",
+      "suggestion": "确认是否为有意保留的两个入口。"
+    }
+  ],
+  "validation": {
+    "node_count": 92,
+    "edge_count": 175,
+    "ok": true,
+    "dangling": [],
+    "self_deps": [],
+    "cycles": [],
+    "duplicate_versions": []
+  },
+  "provenance": {
+    "schema_version": "1",
+    "source": "deterministic:registry",
+    "note": "语义层级为确定性基线；agent 提案通过 apply_semantic_levels 覆盖。",
+    "agent": {
+      "proposal_dir": "task_graph_agents/",
+      "accepted_proposals": 15,
+      "rejected": [
+        {
+          "category": "combat",
+          "task_id": "native.clear_surface_threats",
+          "reason": "任务不在图中"
+        },
+        {
+          "category": "combat",
+          "task_id": "native.conquer_mid_tier_foes",
+          "reason": "任务不在图中"
+        },
+        {
+          "category": "combat",
+          "task_id": "native.conquer_dungeon_bosses",
+          "reason": "任务不在图中"
+        },
+        {
+          "category": "crafting",
+          "task_id": "native.starter_toolkit",
+          "reason": "任务不在图中"
+        },
+        {
+          "category": "crafting",
+          "task_id": "native.iron_gear",
+          "reason": "任务不在图中"
+        },
+        {
+          "category": "crafting",
+          "task_id": "native.crafting_mastery",
+          "reason": "任务不在图中"
+        }
+      ],
+      "semantic_level_overrides": 77
+    }
+  }
+}

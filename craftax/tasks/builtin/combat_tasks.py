@@ -67,15 +67,24 @@ def _count_achieved(
 # 逐个击败任务
 # ---------------------------------------------------------------------------
 
-# (task_id, achievement, 英文指令, 中文指令, 目标中文名)
-_SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str]] = [
-    ("native.defeat_zombie", "DEFEAT_ZOMBIE", "Defeat a zombie.", "击败一只僵尸。", "僵尸"),
+# (task_id, achievement, 英文指令, 中文指令, 目标中文名, dependencies)
+# 依赖：楼层（敌人所在区域，严格） + 武器（推荐但按严格前置记录最低要求）
+_SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str, List[str]]] = [
+    (
+        "native.defeat_zombie",
+        "DEFEAT_ZOMBIE",
+        "Defeat a zombie.",
+        "击败一只僵尸。",
+        "僵尸",
+        ["native.craft_wood_sword"],  # 地表夜晚刷新
+    ),
     (
         "native.defeat_skeleton",
         "DEFEAT_SKELETON",
         "Defeat a skeleton.",
         "击败一只骷髅。",
         "骷髅",
+        ["native.enter_dungeon", "native.craft_wood_sword"],
     ),
     (
         "native.defeat_gnome_warrior",
@@ -83,6 +92,7 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str]] = [
         "Defeat a gnome warrior.",
         "击败一名侏儒战士。",
         "侏儒战士",
+        ["native.enter_gnomish_mines", "native.craft_stone_sword"],
     ),
     (
         "native.defeat_gnome_archer",
@@ -90,6 +100,7 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str]] = [
         "Defeat a gnome archer.",
         "击败一名侏儒弓箭手。",
         "侏儒弓箭手",
+        ["native.enter_gnomish_mines", "native.craft_stone_sword"],
     ),
     (
         "native.defeat_orc_soldier",
@@ -97,6 +108,7 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str]] = [
         "Defeat an orc soldier.",
         "击败一名兽人士兵。",
         "兽人士兵",
+        ["native.enter_sewers", "native.craft_stone_sword"],
     ),
     (
         "native.defeat_orc_mage",
@@ -104,15 +116,31 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str]] = [
         "Defeat an orc mage.",
         "击败一名兽人法师。",
         "兽人法师",
+        ["native.enter_sewers", "native.craft_stone_sword"],
     ),
-    ("native.defeat_troll", "DEFEAT_TROLL", "Defeat a troll.", "击败一只巨魔。", "巨魔"),
-    ("native.defeat_kobold", "DEFEAT_KOBOLD", "Defeat a kobold.", "击败一只狗头人。", "狗头人"),
+    (
+        "native.defeat_troll",
+        "DEFEAT_TROLL",
+        "Defeat a troll.",
+        "击败一只巨魔。",
+        "巨魔",
+        ["native.enter_troll_mines", "native.craft_iron_sword"],
+    ),
+    (
+        "native.defeat_kobold",
+        "DEFEAT_KOBOLD",
+        "Defeat a kobold.",
+        "击败一只狗头人。",
+        "狗头人",
+        ["native.enter_sewers", "native.craft_stone_sword"],
+    ),
     (
         "native.defeat_necromancer",
         "DEFEAT_NECROMANCER",
         "Defeat the necromancer boss.",
         "击败亡灵法师 Boss。",
         "亡灵法师",
+        ["native.enter_graveyard", "native.craft_diamond_sword"],
     ),
     (
         "native.defeat_knight",
@@ -120,6 +148,7 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str]] = [
         "Defeat a knight.",
         "击败一名骑士。",
         "骑士",
+        ["native.enter_vault", "native.craft_iron_sword"],
     ),
     (
         "native.defeat_archer",
@@ -127,6 +156,7 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str]] = [
         "Defeat an archer.",
         "击败一名弓箭手。",
         "弓箭手",
+        ["native.enter_vault", "native.craft_iron_sword"],
     ),
 ]
 
@@ -137,6 +167,7 @@ def _defeat_single_spec(
     instruction_en: str,
     instruction_zh: str,
     enemy_zh: str,
+    dependencies: List[str],
 ) -> TaskSpec:
     return TaskSpec(
         task_id=task_id,
@@ -146,6 +177,7 @@ def _defeat_single_spec(
         success_predicate=_ach(achievement),
         annotation_predicates=[_ach(achievement)],
         renderer_config={},
+        dependencies=list(dependencies),
     )
 
 
@@ -170,6 +202,7 @@ def _damage_necromancer_spec() -> TaskSpec:
         success_predicate=_ach("DAMAGE_NECROMANCER"),
         annotation_predicates=[_ach("DAMAGE_NECROMANCER")],
         renderer_config={},
+        dependencies=["native.enter_graveyard", "native.craft_diamond_sword"],
     )
 
 
@@ -190,6 +223,11 @@ def _defeat_elemental_spec() -> TaskSpec:
         },
         annotation_predicates=[_ach(name) for name in ELEMENTAL_ACHIEVEMENTS],
         renderer_config={},
+        dependencies=[
+            "native.enter_fire_realm",
+            "native.enter_ice_realm",
+            "native.craft_diamond_sword",
+        ],
     )
 
 
@@ -222,6 +260,11 @@ def _defeat_three_enemies_spec() -> TaskSpec:
         success_predicate={"type": "or", "predicates": triples},
         annotation_predicates=[_ach(name) for name in ALL_ENEMY_ACHIEVEMENTS],
         renderer_config={},
+        dependencies=[
+            "native.defeat_zombie",
+            "native.defeat_skeleton",
+            "native.defeat_gnome_warrior",
+        ],
     )
 
 
@@ -258,6 +301,7 @@ def _defeat_undead_spec() -> TaskSpec:
         },
         annotation_predicates=[_ach(name) for name in UNDEAD_ACHIEVEMENTS],
         renderer_config={},
+        dependencies=["native.defeat_zombie", "native.defeat_skeleton"],
     )
 
 
@@ -280,8 +324,8 @@ class DefeatUndeadTask(BaseTaskAdapter):
 def register_combat_tasks() -> None:
     from craftax.tasks.registry import register
 
-    for task_id, achievement, en, zh, enemy_zh in _SINGLE_DEFEAT_TASKS:
-        spec = _defeat_single_spec(task_id, achievement, en, zh, enemy_zh)
+    for task_id, achievement, en, zh, enemy_zh, deps in _SINGLE_DEFEAT_TASKS:
+        spec = _defeat_single_spec(task_id, achievement, en, zh, enemy_zh, deps)
         register(spec.task_id, spec.version, lambda spec=spec: SingleAchievementTask(spec))
 
     damage = _damage_necromancer_spec()

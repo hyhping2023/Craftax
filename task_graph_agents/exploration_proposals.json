@@ -1,0 +1,134 @@
+{
+  "category": "exploration",
+  "semantic_levels": {
+    "native.deep_explorer": "composite",
+    "native.enter_dungeon": "atomic",
+    "native.enter_fire_realm": "atomic",
+    "native.enter_gnomish_mines": "atomic",
+    "native.enter_graveyard": "atomic",
+    "native.enter_ice_realm": "atomic",
+    "native.enter_sewers": "atomic",
+    "native.enter_troll_mines": "atomic",
+    "native.enter_vault": "atomic",
+    "native.open_chest": "atomic",
+    "native.place_furnace": "atomic",
+    "native.place_plant": "atomic",
+    "native.place_stone": "atomic",
+    "native.place_table": "atomic",
+    "native.place_torch": "atomic",
+    "native.reach_boss_floor": "root_goal",
+    "native.reach_floor_3": "root_goal",
+    "native.reach_floor_5": "root_goal",
+    "native.wake_up": "atomic"
+  },
+  "proposed_tasks": [
+    {
+      "task_id": "native.reach_mid_dungeon",
+      "instruction_en": "Reach the mid-dungeon: sewers and vault.",
+      "instruction_zh": "推进到中层地牢：下水道与宝库。",
+      "objective": "同时达成进入下水道与进入宝库两个成就，标志穿越地下城的中段里程碑。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {
+            "type": "achievement",
+            "name": "ENTER_SEWERS"
+          },
+          {
+            "type": "achievement",
+            "name": "ENTER_VAULT"
+          }
+        ]
+      },
+      "dependencies": [
+        "native.enter_sewers",
+        "native.enter_vault"
+      ],
+      "rationale": "将线性楼层链中的中段两站（下水道 level 3、宝库 level 4）聚合为单一里程碑任务，位于 gnomish_mines 与 troll_mines 之间，为 deep_explorer 提供可展示的中间进度；依赖严格保持 enter_sewers -> enter_vault 的楼层顺序。"
+    },
+    {
+      "task_id": "native.conquer_lower_realms",
+      "instruction_en": "Conquer the lower realms: troll mines, fire realm and ice realm.",
+      "instruction_zh": "征服下层领域：巨魔矿洞、火焰领域与寒冰领域。",
+      "objective": "依次打通巨魔矿洞、火焰领域与寒冰领域（三者 ENTER_* 成就全部达成），直通墓地。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {
+            "type": "achievement",
+            "name": "ENTER_TROLL_MINES"
+          },
+          {
+            "type": "achievement",
+            "name": "ENTER_FIRE_REALM"
+          },
+          {
+            "type": "achievement",
+            "name": "ENTER_ICE_REALM"
+          }
+        ]
+      },
+      "dependencies": [
+        "native.enter_troll_mines",
+        "native.enter_fire_realm",
+        "native.enter_ice_realm"
+      ],
+      "rationale": "将楼层的深层三站（troll mines level 5、fire realm level 6、ice realm level 7）聚合为最终冲刺墓地的组合目标；该组在 deep_explorer 中被跳过（其仅覆盖 sewers/vault/graveyard），补全了楼层链中段到末段的层次，依赖保持 troll -> fire -> ice 线性顺序。"
+    },
+    {
+      "task_id": "native.build_home_base",
+      "instruction_en": "Build a home base: place a table, a furnace and a torch.",
+      "instruction_zh": "搭建家园基地：放置桌子、熔炉与火把。",
+      "objective": "在出生地附近放置桌子、熔炉与火把（三者 PLACE_* 成就全部达成），完成基础营地建设。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {
+            "type": "achievement",
+            "name": "PLACE_TABLE"
+          },
+          {
+            "type": "achievement",
+            "name": "PLACE_FURNACE"
+          },
+          {
+            "type": "achievement",
+            "name": "PLACE_TORCH"
+          }
+        ]
+      },
+      "dependencies": [
+        "native.place_table",
+        "native.place_furnace",
+        "native.place_torch"
+      ],
+      "rationale": "将分散的建造/放置类原子任务聚合成一个明确的'定居/建家'高层目标，作为主线探索之外的支线集合；每个子任务已有各自的采集/合成前置（collect_wood、craft_wood_pickaxe/collect_stone、craft_torch），组合后可作为后续远程探索的补给枢纽。"
+    }
+  ],
+  "anomalies": [
+    {
+      "task_id": "native.explore_dungeon",
+      "issue": "native 分类中的 explore_dungeon 与 exploration 分类的 reach_boss_floor 完全重复：两者 success_predicate 均为 level_ge 8（到达 Boss 层），且 explore_dungeon 的 dependencies 只写了 native.enter_dungeon，未体现完整的线性楼层链（至少应含 enter_graveyard）。",
+      "suggestion": "保留其中一个作为根目标：建议删除或重定位 explore_dungeon，统一由 reach_boss_floor（依赖 native.enter_graveyard）承担'到达 Boss 层'；若保留 explore_dungeon，其 dependencies 应补全为整个 enter_* 链。"
+    },
+    {
+      "task_id": "native.place_furnace",
+      "issue": "依赖只有 native.craft_wood_pickaxe，缺少直接材料前置 native.collect_stone：放置熔炉需要持有石料（熔炉由石料合成），挖矿镐只是间接工具链。",
+      "suggestion": "在 dependencies 中加入 native.collect_stone，形成 craft_wood_pickaxe -> collect_stone -> place_furnace 的完整材料链。"
+    },
+    {
+      "task_id": "native.place_stone",
+      "issue": "依赖只有 native.craft_wood_pickaxe，缺少 native.collect_stone：放置石头的前提是背包中已持有石头（COLLECT_STONE 成就）。",
+      "suggestion": "在 dependencies 中加入 native.collect_stone（craft_wood_pickaxe 已隐式覆盖挖矿能力，直接补上材料成就即可）。"
+    },
+    {
+      "task_id": "native.deep_explorer",
+      "issue": "语义覆盖不完整：名称意为'探索最深处'，但实际只要求 sewers/vault/graveyard 三个成就，跳过了中间层的 troll_mines/fire_realm/ice_realm；且其目标语'最深处'与 graveyard（level 8 前一层）不完全吻合。",
+      "suggestion": "若想表达'深入探索'，可改为 or(ENTER_GRAVEYARD, level_ge 8) 或补充中间层成就；若保持现状，建议将 objective 措辞与成就集合对齐，避免与 proposed native.conquer_lower_realms 的目标语义混淆。"
+    }
+  ],
+  "rationale": "exploration 分类由三层结构组成：(1) 8 个 enter_* 原子任务构成严格线性楼层链（enter_dungeon -> enter_gnomish_mines -> enter_sewers -> enter_vault -> enter_troll_mines -> enter_fire_realm -> enter_ice_realm -> enter_graveyard），与 LEVEL_ACHIEVEMENT_MAP 的楼层语义一一对应，是依赖图的主干；(2) 3 个 level_ge 根目标（reach_floor_3/5/boss）对应楼层里程碑，与 enter_sewers/troll_mines/graveyard 在数值上重合（level N 恰为该层 ENTER_* 成就），作为带连续进度的根目标保留；(3) 5 个 place_* 与 open_chest/wake_up 为独立的定居/生存原子任务。deep_explorer 是现有唯一复合任务。提议新增 3 个复合任务：reach_mid_dungeon（中段里程碑）、conquer_lower_realms（末段冲刺，补齐 deep_explorer 跳过的中间层）、build_home_base（定居集合），均严格遵循依赖链并只组合合法成就谓词。主要异常：explore_dungeon 与 reach_boss_floor 重复、place_furnace/place_stone 缺 collect_stone 材料依赖。",
+  "_reference": {
+    "note": "dependencies 引用约定：跨任务前置放在 dependencies（严格前置），success_predicate 只组合成就/level 谓词；与 deep_explorer 及 TaskSpec 现有约定一致。"
+  }
+}

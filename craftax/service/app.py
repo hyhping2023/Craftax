@@ -5,6 +5,7 @@
 - POST   /v1/sessions/{sid}/reset          显式 reset
 - POST   /v1/sessions/{sid}/step           执行动作
 - GET    /v1/sessions/{sid}/snapshot       结构化 observation / 摘要
+- GET    /v1/sessions/{sid}/map            指定楼层的完整方块网格与玩家位置
 - GET    /v1/sessions/{sid}/frames/{rev}   以 image/png 返回指定 revision 的帧
 - DELETE /v1/sessions/{sid}                删除会话
 
@@ -67,6 +68,8 @@ def _summary_to_model(summary: Any) -> Optional[StateSummaryModel]:
         instruction=summary.instruction,
         task_id=summary.task_id,
         task_version=summary.task_version,
+        player_position=list(summary.player_position),
+        player_direction=int(summary.player_direction),
     )
 
 
@@ -183,6 +186,28 @@ def create_app(manager: Optional[SessionManager] = None) -> FastAPI:
         actor = mgr.get(sid)
         png = actor.get_frame_png(revision)
         return Response(content=png, media_type="image/png")
+
+    @app.get("/v1/sessions/{sid}/map")
+    def get_map(sid: str, floor: Optional[int] = None) -> JSONResponse:
+        """返回指定楼层（默认当前楼层）的完整方块网格与玩家位置。
+
+        供路径规划器读取全图：map 为 48×48 的 BlockType int 网格，
+        player_position 为 [x, y]，player_direction 为朝向动作 id。
+        """
+        actor = mgr.get(sid)
+        try:
+            payload = actor.get_map(floor)
+        except ValueError as e:  # noqa: BLE001
+            return JSONResponse(
+                status_code=400,
+                content={"error": "invalid_floor", "detail": {"message": str(e)}},
+            )
+        except RuntimeError as e:  # noqa: BLE001
+            return JSONResponse(
+                status_code=409,
+                content={"error": "no_state", "detail": {"message": str(e)}},
+            )
+        return JSONResponse(content=payload)
 
     # -- 错误处理 -----------------------------------------------------------
 

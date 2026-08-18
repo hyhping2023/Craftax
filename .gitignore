@@ -10,6 +10,10 @@ data/
 spool/
 *.mp4
 
+# 任务图构建：子 agent 输入可随时用 --emit-inputs 重新生成，忽略之；
+# 提案 JSON（agent 输出）与 craftax/tasks/task_graph.json（静态产物）需入库。
+task_graph_agents/*_input.json
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

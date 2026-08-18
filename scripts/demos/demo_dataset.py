@@ -5,7 +5,7 @@
 
 用法：
     python scripts/demos/demo_dataset.py --latest
-    python scripts/demos/demo_dataset.py --shard data/spool/demo-record/<shard-id>
+    python scripts/demos/demo_dataset.py --shard <shard-dir>
     python scripts/demos/demo_dataset.py --latest --export data/webdataset/
 """
 import argparse
@@ -14,6 +14,8 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+from craftax.contracts import default_data_dir  # noqa: E402
 
 
 def find_latest_shard(root: Path) -> Path:
@@ -28,7 +30,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="数据集读取 demo")
     parser.add_argument("--shard", help="shard 目录路径")
     parser.add_argument("--latest", action="store_true",
-                        help="自动选择 data/spool 下最新的 shard")
+                        help=f"自动选择默认数据目录（{default_data_dir()}）下最新的 shard")
     parser.add_argument("--window", type=int, default=4, help="窗口长度")
     parser.add_argument("--export", help="导出 WebDataset tar 的目标目录")
     args = parser.parse_args()
@@ -41,7 +43,7 @@ def main() -> None:
     if args.shard:
         shard_dir = Path(args.shard)
     elif args.latest:
-        shard_dir = find_latest_shard(PROJECT_ROOT / "data" / "spool")
+        shard_dir = find_latest_shard(Path(default_data_dir()))
     else:
         parser.error("请提供 --shard <path> 或 --latest")
 

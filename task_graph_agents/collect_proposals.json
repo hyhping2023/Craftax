@@ -1,0 +1,117 @@
+{
+  "category": "collect",
+  "semantic_levels": {
+    "native.collect_stone": "atomic",
+    "native.collect_coal": "atomic",
+    "native.collect_iron": "atomic",
+    "native.collect_diamond": "atomic",
+    "native.collect_sapphire": "atomic",
+    "native.collect_ruby": "atomic",
+    "native.collect_drink": "atomic",
+    "native.collect_sapling": "atomic",
+    "native.eat_cow": "atomic",
+    "native.eat_plant": "atomic",
+    "native.eat_bat": "atomic",
+    "native.eat_snail": "atomic",
+    "native.drink_potion": "atomic",
+    "native.collect_ore": "composite",
+    "native.collect_all_gems": "composite",
+    "native.eat_food": "composite"
+  },
+  "proposed_tasks": [
+    {
+      "task_id": "native.collect_all_primary_resources",
+      "instruction_en": "Collect all primary resources.",
+      "instruction_zh": "收集全部基础资源。",
+      "objective": "同时收集木材、石头、煤炭、铁矿石与钻石（COLLECT_WOOD / COLLECT_STONE / COLLECT_COAL / COLLECT_IRON / COLLECT_DIAMOND 成就）。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "COLLECT_WOOD"},
+          {"type": "achievement", "name": "COLLECT_STONE"},
+          {"type": "achievement", "name": "COLLECT_COAL"},
+          {"type": "achievement", "name": "COLLECT_IRON"},
+          {"type": "achievement", "name": "COLLECT_DIAMOND"}
+        ]
+      },
+      "dependencies": [
+        "native.collect_wood",
+        "native.collect_stone",
+        "native.collect_coal",
+        "native.collect_iron",
+        "native.collect_diamond",
+        "native.craft_iron_pickaxe"
+      ],
+      "rationale": "把前期 5 种基础资源收集任务聚合为更高层目标：木材/石头/煤炭/铁/钻石构成完整的采矿资源链。矿石任务同现有约定必须携带镐依赖（取最深所需 native.craft_iron_pickaxe）；钻石需要铁镐，故依赖已覆盖。collect_wood 语义上属于本类别但定义在 native 模块，这里跨类别引用。"
+    },
+    {
+      "task_id": "native.survival_sustenance",
+      "instruction_en": "Secure food and drink.",
+      "instruction_zh": "解决食物与饮水，维持生存。",
+      "objective": "获得饮用水（COLLECT_DRINK）并食用任意一种食物（EAT_COW / EAT_PLANT / EAT_BAT / EAT_SNAIL 任一）。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "COLLECT_DRINK"},
+          {
+            "type": "or",
+            "predicates": [
+              {"type": "achievement", "name": "EAT_COW"},
+              {"type": "achievement", "name": "EAT_PLANT"},
+              {"type": "achievement", "name": "EAT_BAT"},
+              {"type": "achievement", "name": "EAT_SNAIL"}
+            ]
+          }
+        ]
+      },
+      "dependencies": [
+        "native.collect_drink",
+        "native.eat_food"
+      ],
+      "rationale": "作为本类别的顶层生存目标（root_goal）：饮水加任意食物的 and 组合即生存基本盘。依赖复用 collect 类别内已有的复合任务 native.eat_food（or 组合），而不是逐个列出 4 个吃类原子任务，避免重复展开。"
+    },
+    {
+      "task_id": "native.collect_all_ores",
+      "instruction_en": "Collect every ore and gem.",
+      "instruction_zh": "收集全部矿石与宝石。",
+      "objective": "同时收集煤、铁、钻石、蓝宝石与红宝石（COLLECT_COAL / COLLECT_IRON / COLLECT_DIAMOND / COLLECT_SAPPHIRE / COLLECT_RUBY 成就）。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "COLLECT_COAL"},
+          {"type": "achievement", "name": "COLLECT_IRON"},
+          {"type": "achievement", "name": "COLLECT_DIAMOND"},
+          {"type": "achievement", "name": "COLLECT_SAPPHIRE"},
+          {"type": "achievement", "name": "COLLECT_RUBY"}
+        ]
+      },
+      "dependencies": [
+        "native.collect_coal",
+        "native.collect_iron",
+        "native.collect_diamond",
+        "native.collect_sapphire",
+        "native.collect_ruby",
+        "native.craft_diamond_pickaxe"
+      ],
+      "rationale": "collect_ore（任意矿石, or）的补集目标：集齐全部 5 种矿石/宝石。依赖列出 5 个原子收集任务，并携带最深镐依赖 native.craft_diamond_pickaxe（蓝/红宝石需钻石镐，见 collect_sapphire/collect_ruby 的依赖）；enter_vault / enter_troll_mines 由 collect_sapphire / collect_ruby 传递覆盖。"
+    }
+  ],
+  "anomalies": [
+    {
+      "task_id": "native.collect_ore",
+      "issue": "success_predicate 为 or（COAL/IRON/DIAMOND/SAPPHIRE/RUBY），但 dependencies 仅列 native.craft_wood_pickaxe。钻石（需铁镐）与蓝/红宝石（需钻石镐 + 进入 vault/troll mines）分支的前置未在依赖中体现；依赖只保证最浅分支（煤炭）可达。",
+      "suggestion": "若按'任意矿石'语义保留最小依赖则维持现状；若希望规划图完整展开每条分支，建议补充 native.craft_iron_pickaxe / native.craft_diamond_pickaxe / native.enter_vault / native.enter_troll_mines 为可选前置。"
+    },
+    {
+      "task_id": "native.collect_wood",
+      "issue": "语义上属于 collect 类别（COLLECT_WOOD 资源收集），但任务定义于 native 模块且被类别映射固定为 'native'，导致 collect 类别缺少木材任务，跨类别复合目标需显式引用 native.collect_wood。",
+      "suggestion": "确认是否把 collect_wood 重归类到 collect，或在类别映射中加入 'native.collect_wood' -> 'collect' 覆盖（当前 _CATEGORY_OVERRIDES 反而强制为 native）。"
+    },
+    {
+      "task_id": "native.drink_potion",
+      "issue": "DRINK_POTION 在游戏机制中需先获取药水（通常来自宝箱/探索），但 dependencies 为空，与 collect_sapphire/collect_ruby 依赖探索任务的约定不一致。",
+      "suggestion": "考虑补充探索类依赖（如 native.open_chest）作为 advisory 前置，使规划图能反映现实获取路径。"
+    }
+  ],
+  "rationale": "collect 类别共 16 个任务：13 个原子任务（单个成就完成，success_type=achievement）与 3 个复合任务（collect_ore or 5 矿、collect_all_gems and 双宝石、eat_food or 4 种食物），与 graph.py 的基线规则（achievement->atomic、and/or->composite）完全一致，本类别现有任务中无 root_goal。提出的 3 个新任务：collect_all_primary_resources（and 聚合木材+4 种基础矿石，携带铁镐依赖）、survival_sustenance（and 饮水+任意食物，作为本类别唯一 root_goal，依赖复用 eat_food）、collect_all_ores（and 集齐全部 5 种矿石/宝石，携带钻石镐依赖，蓝/红宝石的 vault/troll mines 由子任务传递覆盖）。新任务均严格使用枚举中的成就名，依赖只引用已存在 task_id，未修改任何现有任务定义。"
+}

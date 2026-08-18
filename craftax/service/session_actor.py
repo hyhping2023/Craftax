@@ -362,6 +362,75 @@ class SessionActor:
                 raise FrameNotFoundError(self.session_id, revision)
             return encode_png(rgb)
 
+    def get_map(self, floor: Optional[int] = None) -> Dict[str, Any]:
+        """返回指定楼层（默认当前楼层）的完整方块网格、玩家位置与实体状态。
+
+        供规划器/demo 客户端读取全图；返回 host numpy/list,不做 JAX 编译。
+        新增字段供技能链执行器使用：
+        - mob_positions / mob_masks：本层怪物坐标与存活掩码（melee/ranged/passive）
+        - ladder_down / ladder_up：本层下/上梯坐标
+        - monsters_killed：本层已击杀数（下楼门槛用）
+        - chest_positions：本层未开的 CHEST 方块坐标
+        """
+        with self._lock:
+            if self._state is None:
+                raise RuntimeError("session has no state yet")
+            level = int(np.asarray(self._state.player_level).item())
+            if floor is None:
+                floor = level
+            if not 0 <= floor < self._state.map.shape[0]:
+                raise ValueError(f"floor {floor} 越界（共 {self._state.map.shape[0]} 层）")
+            state = self._state
+            host_map = jax.device_get(state.map[floor])
+            pos = jax.device_get(state.player_position)
+            direction = int(np.asarray(state.player_direction).item())
+
+            # 怪物坐标与掩码（本层）
+            mobs = {}
+            for key in ("melee", "ranged", "passive"):
+                mob = getattr(state, f"{key}_mobs", None)
+                if mob is None:
+                    mobs[key] = {"positions": [], "masks": []}
+                    continue
+                m_pos = jax.device_get(mob.position[floor])
+                m_mask = jax.device_get(mob.mask[floor])
+                mobs[key] = {
+                    "positions": [
+                        [int(p[0].item()), int(p[1].item())]
+                        for p in m_pos if p is not None
+                    ],
+                    "masks": [bool(x.item()) for x in m_mask],
+                }
+
+            # 梯子与击杀数（本层）
+            down = jax.device_get(state.down_ladders[floor])
+            up = jax.device_get(state.up_ladders[floor])
+            monsters_killed = int(
+                np.asarray(state.monsters_killed[floor]).item()
+            )
+
+            # 未开宝箱位置（本层 CHEST 块，排除已开）
+            map_arr = np.asarray(host_map)
+            from craftax.craftax.constants import BlockType
+
+            chest_rows, chest_cols = np.where(map_arr == BlockType.CHEST.value)
+            chest_positions = [
+                [int(x), int(y)] for x, y in zip(chest_rows, chest_cols)
+            ]
+
+            return {
+                "floor": floor,
+                "current_level": level,
+                "map": host_map.tolist(),
+                "player_position": [int(pos[0].item()), int(pos[1].item())],
+                "player_direction": direction,
+                "mob_positions": mobs,
+                "ladder_down": [int(down[0].item()), int(down[1].item())],
+                "ladder_up": [int(up[0].item()), int(up[1].item())],
+                "monsters_killed": monsters_killed,
+                "chest_positions": chest_positions,
+            }
+
     def close(self) -> None:
         with self._lock:
             self._hook.close()
@@ -647,11 +716,20 @@ class SessionActor:
             is_resting=bool(np.asarray(host_state.is_resting).item()),
             inventory=inventory,
             achievements=achieved,
+            sword_enchantment=int(np.asarray(host_state.sword_enchantment).item()),
+            bow_enchantment=int(np.asarray(host_state.bow_enchantment).item()),
+            armour_enchantments=[int(v) for v in np.asarray(host_state.armour_enchantments).ravel()],
+            learned_spells=[bool(v) for v in np.asarray(host_state.learned_spells).ravel()],
             task_progress=float(eval_result.progress),
             task_done=bool(eval_result.done),
             instruction=eval_result.instruction,
             task_id=self.task_id,
             task_version=self.task_version,
+            player_position=[
+                int(np.asarray(host_state.player_position[0]).item()),
+                int(np.asarray(host_state.player_position[1]).item()),
+            ],
+            player_direction=int(np.asarray(host_state.player_direction).item()),
         )
         return eval_result, summary
 

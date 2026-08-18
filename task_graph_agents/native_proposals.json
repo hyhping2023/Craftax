@@ -1,0 +1,141 @@
+{
+  "category": "native",
+  "semantic_levels": {
+    "native.survive": "root_goal",
+    "native.collect_wood": "atomic",
+    "native.craft_tools": "composite",
+    "native.defeat_enemy": "composite",
+    "native.explore_dungeon": "root_goal"
+  },
+  "proposed_tasks": [
+    {
+      "task_id": "native.survival_starter_kit",
+      "instruction_en": "Gather wood and craft a basic tool.",
+      "instruction_zh": "收集木材并制作一把基础工具。",
+      "objective": "完成生存起步：收集木材并制作任意一种镐（木/石/铁/钻石镐任一），具备采矿与工具制作能力。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "COLLECT_WOOD"},
+          {
+            "type": "or",
+            "predicates": [
+              {"type": "achievement", "name": "MAKE_WOOD_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_STONE_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_IRON_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_DIAMOND_PICKAXE"}
+            ]
+          }
+        ]
+      },
+      "dependencies": ["native.collect_wood", "native.craft_tools"],
+      "rationale": "把本类别两个最基础的 setup 类任务（收集木材 + 制作任意镐）聚合为单一早期里程碑，作为后续采矿、制作与探索链路的共同前置；success 谓词直接复用两个子任务的成就组合（and 包裹 or 子句），与 existing composite 任务（craft_full_kit）的嵌套风格一致。"
+    },
+    {
+      "task_id": "native.basic_combat_training",
+      "instruction_en": "Arm yourself and defeat your first enemy.",
+      "instruction_zh": "武装自己并击败第一个敌人。",
+      "objective": "制作一把木剑并击败任意敌人（任意 DEFEAT_* 击杀成就达成）。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "MAKE_WOOD_SWORD"},
+          {
+            "type": "or",
+            "predicates": [
+              {"type": "achievement", "name": "DEFEAT_ZOMBIE"},
+              {"type": "achievement", "name": "DEFEAT_SKELETON"},
+              {"type": "achievement", "name": "DEFEAT_GNOME_WARRIOR"},
+              {"type": "achievement", "name": "DEFEAT_GNOME_ARCHER"},
+              {"type": "achievement", "name": "DEFEAT_ORC_SOLIDER"},
+              {"type": "achievement", "name": "DEFEAT_ORC_MAGE"},
+              {"type": "achievement", "name": "DEFEAT_LIZARD"},
+              {"type": "achievement", "name": "DEFEAT_KOBOLD"},
+              {"type": "achievement", "name": "DEFEAT_TROLL"},
+              {"type": "achievement", "name": "DEFEAT_DEEP_THING"},
+              {"type": "achievement", "name": "DEFEAT_PIGMAN"},
+              {"type": "achievement", "name": "DEFEAT_FIRE_ELEMENTAL"},
+              {"type": "achievement", "name": "DEFEAT_FROST_TROLL"},
+              {"type": "achievement", "name": "DEFEAT_ICE_ELEMENTAL"},
+              {"type": "achievement", "name": "DEFEAT_NECROMANCER"}
+            ]
+          }
+        ]
+      },
+      "dependencies": ["native.craft_wood_sword", "native.defeat_enemy"],
+      "rationale": "把战斗类 umbrella 任务 native.defeat_enemy 与造剑显式绑定：defeat_enemy 的 dependencies 只记录最低前置（木剑），但谓词覆盖 15 种敌人，本任务用 and 把「持剑」与「任意击杀」同时要求，明确表达早期战斗训练目标。"
+    },
+    {
+      "task_id": "native.dungeon_campaign",
+      "instruction_en": "Complete the dungeon campaign.",
+      "instruction_zh": "完成地下城战役。",
+      "objective": "从收集木材、制作工具起步，一路战斗并下探到 Boss 层（player_level >= 8），完整走通本类别主线。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "COLLECT_WOOD"},
+          {
+            "type": "or",
+            "predicates": [
+              {"type": "achievement", "name": "MAKE_WOOD_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_STONE_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_IRON_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_DIAMOND_PICKAXE"}
+            ]
+          },
+          {
+            "type": "or",
+            "predicates": [
+              {"type": "achievement", "name": "DEFEAT_ZOMBIE"},
+              {"type": "achievement", "name": "DEFEAT_SKELETON"},
+              {"type": "achievement", "name": "DEFEAT_GNOME_WARRIOR"},
+              {"type": "achievement", "name": "DEFEAT_GNOME_ARCHER"},
+              {"type": "achievement", "name": "DEFEAT_ORC_SOLIDER"},
+              {"type": "achievement", "name": "DEFEAT_ORC_MAGE"},
+              {"type": "achievement", "name": "DEFEAT_LIZARD"},
+              {"type": "achievement", "name": "DEFEAT_KOBOLD"},
+              {"type": "achievement", "name": "DEFEAT_TROLL"},
+              {"type": "achievement", "name": "DEFEAT_DEEP_THING"},
+              {"type": "achievement", "name": "DEFEAT_PIGMAN"},
+              {"type": "achievement", "name": "DEFEAT_FIRE_ELEMENTAL"},
+              {"type": "achievement", "name": "DEFEAT_FROST_TROLL"},
+              {"type": "achievement", "name": "DEFEAT_ICE_ELEMENTAL"},
+              {"type": "achievement", "name": "DEFEAT_NECROMANCER"}
+            ]
+          },
+          {"type": "level_ge", "value": 8}
+        ]
+      },
+      "dependencies": [
+        "native.collect_wood",
+        "native.craft_tools",
+        "native.defeat_enemy",
+        "native.explore_dungeon"
+      ],
+      "rationale": "本类别的终极 root goal：把收集、制作、战斗、探索四条 umbrella 主线用 and 聚合为一条可判定的战役完成标准（level_ge 8 即 Boss 层）。native.survive 的 success 谓词恒真，不构成约束，故不列入 dependencies（已在全局 rationale 说明）。"
+    }
+  ],
+  "anomalies": [
+    {
+      "task_id": "native.craft_tools",
+      "issue": "success_predicate 含 4 个镐成就（含 MAKE_DIAMOND_PICKAXE），但 objective 文案与 annotation_predicates 只列木/石/铁 3 种（native.py 中 annotation 列表 pickaxes 仅 3 项），成功条件与标注不一致。",
+      "suggestion": "二选一对齐：要么在 objective/annotation 中补充钻石镐，要么从 success_predicate 移除 MAKE_DIAMOND_PICKAXE 使三者一致。"
+    },
+    {
+      "task_id": "native.defeat_enemy",
+      "issue": "or 谓词覆盖 15 种敌人，但漏掉 Achievement 枚举与 combat_tasks.ALL_ENEMY_ACHIEVEMENTS（17 项）中已有的 DEFEAT_KNIGHT 与 DEFEAT_ARCHER，导致本 umbrella 任务与战斗类别定义的敌全集不一致。",
+      "suggestion": "补充 DEFEAT_KNIGHT / DEFEAT_ARCHER（两成就均存在于 constants.Achievement），或明确注释只收录地下城主线敌人。"
+    },
+    {
+      "task_id": "native.explore_dungeon",
+      "issue": "success 要求 level_ge 8（Boss 层），但 dependencies 仅 native.enter_dungeon；而 exploration_tasks 中同条件（level_ge 8）的 native.reach_boss_floor 依赖 native.enter_graveyard，两者依赖链不一致，图推理时 explore_dungeon 的前置覆盖不足。",
+      "suggestion": "将依赖补充为 native.enter_graveyard（或直接依赖 native.reach_boss_floor），使 level_ge 8 的楼层推进前置与现有层级任务一致。"
+    },
+    {
+      "task_id": "native.survive",
+      "issue": "success_predicate 为 always 恒真，谓词层面任务永远 'done'；实际成功由环境终局（存活到最大步数）决定，任何以 native.survive 为前置的图边都是平凡可满足的。",
+      "suggestion": "保留为 root_goal 但明确标注其为基于 time/progress 的开放式目标，不应作为其他任务的严格依赖；annotation_predicates（WAKE_UP / DEFEAT_ZOMBIE）仅作事件采样用途。"
+    }
+  ],
+  "rationale": "native 类别是 5 个顶层 umbrella 任务。semantic_levels：collect_wood 为单一成就（atomic）；craft_tools 与 defeat_enemy 均为 or 组合多成就（composite）；explore_dungeon 以 level_ge 8 定义 Boss 层推进、survive 以恒真谓词 + 时间进度定义开放式存活目标，二者都是顶层 root_goal。proposed_tasks 提出 3 个层次化目标：survival_starter_kit（收集+造镐的早期里程碑）、basic_combat_training（持剑+首杀的显式战斗训练）、dungeon_campaign（聚合四条主线的战役级 root goal）。所有 achievement 名均校验自 constants.Achievement 枚举；dependencies 全部指向现有 task_id（含跨类别 native.craft_wood_sword）或本文件内提议 id。发现 4 处不一致：craft_tools 成功/标注谓词不一致、defeat_enemy 遗漏 KNIGHT/ARCHER、explore_dungeon 与 reach_boss_floor 依赖链不一致、survive 恒真谓词在图中的平凡性。"
+}

@@ -1,0 +1,152 @@
+{
+  "category": "crafting",
+  "semantic_levels": {
+    "native.cast_fireball": "atomic",
+    "native.cast_iceball": "atomic",
+    "native.craft_arrow": "atomic",
+    "native.craft_diamond_armour": "atomic",
+    "native.craft_diamond_pickaxe": "atomic",
+    "native.craft_diamond_sword": "atomic",
+    "native.craft_full_kit": "composite",
+    "native.craft_iron_armour": "atomic",
+    "native.craft_iron_pickaxe": "atomic",
+    "native.craft_iron_sword": "atomic",
+    "native.craft_stone_pickaxe": "atomic",
+    "native.craft_stone_sword": "atomic",
+    "native.craft_torch": "atomic",
+    "native.craft_wood_pickaxe": "atomic",
+    "native.craft_wood_sword": "atomic",
+    "native.enchant_armour": "atomic",
+    "native.enchant_sword": "atomic",
+    "native.find_bow": "atomic",
+    "native.fire_bow": "atomic",
+    "native.learn_fireball": "atomic",
+    "native.learn_iceball": "atomic",
+    "native.master_crafter": "composite",
+    "native.starter_toolkit": "composite",
+    "native.iron_gear": "composite",
+    "native.crafting_mastery": "root_goal"
+  },
+  "proposed_tasks": [
+    {
+      "task_id": "native.starter_toolkit",
+      "instruction_en": "Craft a starter toolkit: wooden pickaxe, wooden sword, torch and arrow.",
+      "instruction_zh": "打造新手工具包：木镐、木剑、火把与箭。",
+      "objective": "同时拥有木镐、木剑、火把和箭（MAKE_WOOD_PICKAXE + MAKE_WOOD_SWORD + MAKE_TORCH + MAKE_ARROW 成就全部达成）。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "MAKE_WOOD_PICKAXE"},
+          {"type": "achievement", "name": "MAKE_WOOD_SWORD"},
+          {"type": "achievement", "name": "MAKE_TORCH"},
+          {"type": "achievement", "name": "MAKE_ARROW"}
+        ]
+      },
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.craft_wood_sword",
+        "native.craft_torch",
+        "native.craft_arrow"
+      ],
+      "rationale": "把游戏开局阶段最短平快的四个制作成就（木镐、木剑、火把、箭）聚合成一个新手目标：木镐解锁石料/煤炭采集，火把依赖煤炭，箭依赖石头，全部共享 collect_wood + 工作台前置。这是 craft_iron_gear 等后续装备链的起点。"
+    },
+    {
+      "task_id": "native.iron_gear",
+      "instruction_en": "Craft a full iron gear set: iron pickaxe, iron sword and iron armour.",
+      "instruction_zh": "打造一整套铁质装备：铁镐、铁剑与铁盔甲。",
+      "objective": "同时拥有铁镐、铁剑和铁盔甲（MAKE_IRON_PICKAXE + MAKE_IRON_SWORD + MAKE_IRON_ARMOUR 成就全部达成）。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {"type": "achievement", "name": "MAKE_IRON_PICKAXE"},
+          {"type": "achievement", "name": "MAKE_IRON_SWORD"},
+          {"type": "achievement", "name": "MAKE_IRON_ARMOUR"}
+        ]
+      },
+      "dependencies": [
+        "native.craft_iron_pickaxe",
+        "native.craft_iron_sword",
+        "native.craft_iron_armour"
+      ],
+      "rationale": "铁器是中期装备分水岭：三件铁装备共享同一条前置链（石镐 + 铁/煤 + 熔炉 + 工作台），且是 craft_full_kit 盔甲分支的最低成本解。聚合为单一中期目标，便于课程按装备等级推进。"
+    },
+    {
+      "task_id": "native.crafting_mastery",
+      "instruction_en": "Master all crafting: collect all four pickaxes and a full kit.",
+      "instruction_zh": "精通全部制作：集齐四种镐并打造一套完整装备。",
+      "objective": "达成 master_crafter（四种镐全部成就）与 craft_full_kit（任意镐 + 任意剑 + 铁/钻石盔甲）的组合目标。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {
+            "type": "and",
+            "predicates": [
+              {"type": "achievement", "name": "MAKE_WOOD_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_STONE_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_IRON_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_DIAMOND_PICKAXE"}
+            ]
+          },
+          {
+            "type": "or",
+            "predicates": [
+              {"type": "achievement", "name": "MAKE_WOOD_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_STONE_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_IRON_PICKAXE"},
+              {"type": "achievement", "name": "MAKE_DIAMOND_PICKAXE"}
+            ]
+          },
+          {
+            "type": "or",
+            "predicates": [
+              {"type": "achievement", "name": "MAKE_WOOD_SWORD"},
+              {"type": "achievement", "name": "MAKE_STONE_SWORD"},
+              {"type": "achievement", "name": "MAKE_IRON_SWORD"},
+              {"type": "achievement", "name": "MAKE_DIAMOND_SWORD"}
+            ]
+          },
+          {
+            "type": "or",
+            "predicates": [
+              {"type": "achievement", "name": "MAKE_IRON_ARMOUR"},
+              {"type": "achievement", "name": "MAKE_DIAMOND_ARMOUR"}
+            ]
+          }
+        ]
+      },
+      "dependencies": [
+        "native.master_crafter",
+        "native.craft_full_kit"
+      ],
+      "rationale": "crafting 类别的顶层目标：在依赖上复用两个既有 composite 任务（master_crafter 的四种镐 and、craft_full_kit 的 and-of-or），谓词直接嵌套两者语义。既避免与既有任务谓词重复定义，又为课程提供唯一 root_goal 出口。"
+    }
+  ],
+  "anomalies": [
+    {
+      "task_id": "native.find_bow",
+      "issue": "dependencies 为空列表，但游戏逻辑中 FIND_BOW 只能通过开启第 1 层（dungeon）的特殊宝箱获得（is_looting_bow 要求 is_opening_chest 且 player_level == 1 且 chests_opened[1] 为 false），因此无前置依赖会使依赖图无法解释宝箱/下矿洞前提。",
+      "suggestion": "将 dependencies 改为 [\"native.open_chest\", \"native.enter_dungeon\"]，保持 FIND_BOW 的宝箱获取语义。"
+    },
+    {
+      "task_id": "native.enchant_sword",
+      "issue": "同时依赖 native.enter_fire_realm 与 native.enter_ice_realm。游戏逻辑中附魔只需站在火/冰任一附魔台旁（ENCHANTMENT_TABLE_FIRE 或 ENCHANTMENT_TABLE_ICE）即可触发 ENCHANT_SWORD，因此同时要求两个领域是过约束。",
+      "suggestion": "依赖列表无法表达析取，建议至少保留一个领域（如 native.enter_fire_realm）；若保留两个，应在 objective/rationale 中说明这是刻意放宽的探索要求。"
+    },
+    {
+      "task_id": "native.enchant_armour",
+      "issue": "同 enchant_sword：同时依赖 fire/ice 两个领域，但 ENCHANT_ARMOUR 只需在任一附魔台完成一次附魔即可达成，双领域依赖过约束。",
+      "suggestion": "保留一个领域作为最小前置（如 native.enter_fire_realm），或文档化双领域为探索性要求。"
+    },
+    {
+      "task_id": "native.craft_diamond_armour",
+      "issue": "dependencies 包含 native.place_furnace，但 game_logic.do_crafting 中 MAKE_DIAMOND_ARMOUR 只需工作台（is_at_crafting_table），不需要熔炉；同 tier 的 craft_diamond_pickaxe / craft_diamond_sword 也未列 place_furnace，语义不一致。",
+      "suggestion": "移除 native.place_furnace（钻石装备无需冶炼；铁镐/铁盔甲链已传递性引入熔炉前置）。"
+    },
+    {
+      "task_id": "native.craft_full_kit",
+      "issue": "dependencies 已覆盖谓词各分支的最低成本解（木镐 / 木剑 / 铁盔甲），本身一致；但注意其 topological_level 为 7，低于 master_crafter 的 9，若课程将两者并列展示易误读装备等级顺序。",
+      "suggestion": "无需修改依赖；可在生成层级图时把 craft_full_kit 视为 '中位装备目标'，master_crafter 视为 '终极工具目标'，二者无包含关系。"
+    }
+  ],
+  "rationale": "crafting 类别 22 个任务中 20 个为单成就 atomic（制作/附魔/魔法各自对应一个 Achievement 成就，成功谓词即单一 achievement），2 个既有 composite（craft_full_kit 为 and-of-or，master_crafter 为纯 and），无既有 root_goal。装备链（木→石→铁→钻石 的镐/剑/盔甲）与资源链（collect_wood/stone/coal/iron/diamond、place_table/place_furnace）在现有 dependencies 中保持正确：铁器需熔炉+工作台、钻石器只需工作台、箭/火把只需工作台。跨类别依赖引用（collect_*、place_*、enter_*、open_chest）均已确认存在。据此提出 3 个新任务：starter_toolkit（开局四件套）、iron_gear（铁器三件套）、crafting_mastery（root_goal，嵌套既有两个 composite 的谓词）。主要异常集中在三类：find_bow 缺失宝箱/下矿前置；附魔任务双领域过约束；diamond_armour 多余熔炉依赖。"
+}

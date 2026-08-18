@@ -14,59 +14,73 @@ from craftax.tasks.base import BaseTaskAdapter
 # 版本：所有 builtin 任务首版统一 1.0.0
 TASK_VERSION = "1.0.0"
 
-# 单资源收集任务：成就名 -> (instruction, objective)
+# 单资源收集任务：成就名 -> (instruction, objective, dependencies)
+# dependencies 为严格前置任务：采石/煤需木镐，铁需石镐，钻石需铁镐，宝石需钻石镐。
 _COLLECT_ITEM_SPECS = {
     "COLLECT_STONE": (
         "Collect stone. / 收集石头。",
         "获取并拾取至少一块石头（COLLECT_STONE 成就）。",
+        ["native.craft_wood_pickaxe"],  # 采石需木镐（pickaxe>=1）
     ),
     "COLLECT_COAL": (
         "Collect coal. / 收集煤炭。",
         "获取并拾取至少一块煤炭（COLLECT_COAL 成就）。",
+        ["native.craft_wood_pickaxe"],  # 挖煤需木镐（pickaxe>=1）
     ),
     "COLLECT_IRON": (
         "Collect iron. / 收集铁矿石。",
         "获取并拾取至少一块铁矿石（COLLECT_IRON 成就）。",
+        ["native.craft_stone_pickaxe"],  # 挖铁需石镐（pickaxe>=2）
     ),
     "COLLECT_DIAMOND": (
         "Collect diamond. / 收集钻石。",
         "获取并拾取至少一颗钻石（COLLECT_DIAMOND 成就）。",
+        ["native.craft_iron_pickaxe"],  # 挖钻石需铁镐（pickaxe>=3）
     ),
     "COLLECT_SAPPHIRE": (
         "Collect sapphire. / 收集蓝宝石。",
         "获取并拾取至少一颗蓝宝石（COLLECT_SAPPHIRE 成就）。",
+        ["native.craft_diamond_pickaxe", "native.enter_vault"],  # 深层矿脉需钻石镐
     ),
     "COLLECT_RUBY": (
         "Collect ruby. / 收集红宝石。",
         "获取并拾取至少一颗红宝石（COLLECT_RUBY 成就）。",
+        ["native.craft_diamond_pickaxe", "native.enter_troll_mines"],  # 深层矿脉需钻石镐
     ),
     "COLLECT_DRINK": (
         "Collect drink. / 收集饮用水。",
         "获取饮用水以满足口渴（COLLECT_DRINK 成就）。",
+        [],  # 水源旁 DO 即可
     ),
     "COLLECT_SAPLING": (
         "Collect a sapling. / 收集树苗。",
         "获取并拾取至少一棵树苗（COLLECT_SAPLING 成就）。",
+        [],
     ),
     "EAT_COW": (
         "Eat beef. / 吃牛肉。",
         "食用一块牛肉（EAT_COW 成就达成）。",
+        [],
     ),
     "EAT_PLANT": (
         "Eat a plant. / 吃一株植物。",
         "食用一株植物（EAT_PLANT 成就达成）。",
+        [],
     ),
     "EAT_BAT": (
         "Eat a bat. / 吃一只蝙蝠。",
         "食用一只蝙蝠（EAT_BAT 成就达成）。",
+        [],
     ),
     "EAT_SNAIL": (
         "Eat a snail. / 吃一只蜗牛。",
         "食用一只蜗牛（EAT_SNAIL 成就达成）。",
+        [],
     ),
     "DRINK_POTION": (
         "Drink a potion. / 喝一瓶药水。",
         "饮用一瓶药水（DRINK_POTION 成就达成）。",
+        [],
     ),
 }
 
@@ -113,7 +127,7 @@ FOOD_ACHIEVEMENTS = [
 
 def _collect_item_spec(achievement: str) -> TaskSpec:
     """单成就收集任务 spec：task_id 由成就名派生（COLLECT_STONE -> native.collect_stone）。"""
-    instruction, objective = _COLLECT_ITEM_SPECS[achievement]
+    instruction, objective, deps = _COLLECT_ITEM_SPECS[achievement]
     return TaskSpec(
         task_id="native." + achievement.lower(),
         version=TASK_VERSION,
@@ -122,6 +136,7 @@ def _collect_item_spec(achievement: str) -> TaskSpec:
         success_predicate={"type": "achievement", "name": achievement},
         annotation_predicates=[{"type": "achievement", "name": achievement}],
         renderer_config={},
+        dependencies=list(deps),
     )
 
 
@@ -149,6 +164,7 @@ def _collect_ore_spec() -> TaskSpec:
             {"type": "achievement", "name": name} for name in ORE_ACHIEVEMENTS
         ],
         renderer_config={},
+        dependencies=["native.craft_wood_pickaxe"],  # 任一矿石都需镐子
     )
 
 
@@ -178,6 +194,10 @@ def _collect_all_gems_spec() -> TaskSpec:
             {"type": "achievement", "name": name} for name in GEM_ACHIEVEMENTS
         ],
         renderer_config={},
+        dependencies=[
+            "native.collect_sapphire",
+            "native.collect_ruby",
+        ],
     )
 
 
@@ -207,6 +227,7 @@ def _eat_food_spec() -> TaskSpec:
             {"type": "achievement", "name": name} for name in FOOD_ACHIEVEMENTS
         ],
         renderer_config={},
+        dependencies=[],  # 任何食物均可，无严格前置
     )
 
 

@@ -30,6 +30,7 @@ dev = [
     "ruff",
     "pre-commit",
     "pytest",
+    "httpx2",
 ]
 server = [
     "fastapi",
@@ -64,3 +65,10 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "craftax/**/*.py" = ["F403", "F405"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: 深层任务集成测试（真实 env 步进，单测可达上万步，耗时较长）",
+]
+# 默认跳过 slow 标记的测试；用 `-m slow` 或 `--runslow` 显式运行
+addopts = "-m \"not slow\""

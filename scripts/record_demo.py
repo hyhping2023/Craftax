@@ -1,7 +1,7 @@
 """模拟录制任务：API 创建 session -> 脚本策略 step -> DELETE 触发封存 -> 校验 + 读取。
 
 用法：python scripts/record_demo.py
-输出：data/spool/<dataset_run_id>/ 下的 sealed shard（已 gitignore）。
+输出：<CRAFTAX_DATA_DIR 或 <仓库根>/data>/<dataset_run_id>/ 下的 sealed shard。
 """
 import json
 import random
@@ -15,7 +15,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 BASE = "http://127.0.0.1:8321"
-SPOOL = PROJECT_ROOT / "data" / "spool"
+
+from craftax.contracts import default_data_dir  # noqa: E402
+
+SPOOL = Path(default_data_dir())
 
 
 def post(path: str, body: dict) -> dict:

@@ -5,5 +5,6 @@ from craftax.tasks.builtin import (  # noqa: F401
     combat_tasks,
     crafting_tasks,
     exploration_tasks,
+    hierarchy_tasks,
     native,
 )
