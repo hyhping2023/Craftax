@@ -94,31 +94,26 @@ DEFAULT_CATEGORY = "misc"
 
 # 已识别的依赖/语义异常（只作 advisory，不自动修改现有任务）。
 # 来源：builtin 模块代码审阅。不作为构建/校验失败项。
+#
+# 已修复并从本表移除（2026-08）：
+# - craft_tools 缺 craft_wood_pickaxe；place_furnace/place_stone 缺 collect_stone；
+# - defeat_skeleton 误依赖 enter_dungeon（骷髅在 L0）；
+# - defeat_orc_soldier/orc_mage 误依赖 enter_sewers（兽人在 L1）；
+# - learn_fireball/iceball 与 enchant_* 的因果方向反了（书/附魔台在 L3/L4，
+#   且元素能力是下 L6/L7 的前置而非其结果）→ 已改为 enter_sewers/enter_vault，
+#   并给 enter_fire_realm/enter_ice_realm 补上元素能力前置边。
+# 余下两项涉及任务语义（成功谓词 / 公开 task_id），需产品确认后再动，
+# 因为改动会影响已录制数据集的标签口径。
 _KNOWN_ANOMALIES: List[Dict[str, str]] = [
-    {
-        "task_id": "native.craft_tools",
-        "issue": "成功谓词要求任一镐成就，但 dependencies 未列出 native.craft_wood_pickaxe（只列 collect_wood/place_table）。",
-        "suggestion": "考虑补充依赖 native.craft_wood_pickaxe。",
-    },
-    {
-        "task_id": "native.place_furnace",
-        "issue": "放置熔炉需石头，但 dependencies 未含 native.collect_stone。",
-        "suggestion": "考虑补充依赖 native.collect_stone。",
-    },
-    {
-        "task_id": "native.place_stone",
-        "issue": "放置石头需先收集石头，但 dependencies 未含 native.collect_stone。",
-        "suggestion": "考虑补充依赖 native.collect_stone。",
-    },
     {
         "task_id": "native.defeat_enemy",
         "issue": "成功谓词覆盖 15 种敌人，combat 模块单独任务覆盖 17 种（DEFEAT_KNIGHT/DEFEAT_ARCHER 未纳入）。",
-        "suggestion": "确认是否应把 KNIGHT/ARCHER 纳入 defeat_enemy。",
+        "suggestion": "确认是否应把 KNIGHT/ARCHER 纳入 defeat_enemy（改成功谓词=改任务语义，需版本化）。",
     },
     {
         "task_id": "native.explore_dungeon",
         "issue": "与 native.reach_boss_floor 语义重复（均为 level_ge 8）。",
-        "suggestion": "确认是否为有意保留的两个入口。",
+        "suggestion": "确认是否为有意保留的两个入口（两者都是公开 task_id，删除会破坏既有数据集）。",
     },
 ]
 

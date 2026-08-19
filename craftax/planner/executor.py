@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import bisect
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+import math
+from collections import Counter
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -27,7 +29,15 @@ from craftax.planner.path_planner import (
     blocked,
     find_nearest_target,
 )
-from craftax.planner.combat_model import Gear, energy_is_bottleneck, recommend_tactic
+from craftax.planner.combat_model import (
+    ClearPrep,
+    Gear,
+    energy_is_bottleneck,
+    estimated_steps_bow,
+    project_sleep,
+    projected_awake_health,
+    recommend_tactic,
+)
 from craftax.planner.planner import check_floor_readiness, has_elemental
 from craftax.planner.world import WorldFacts
 
@@ -229,6 +239,22 @@ CAST_ACTIONS: Dict[str, int] = {
     "native.cast_iceball": CAST_ICEBALL,
 }
 
+# 附魔任务 -> 附魔台所在楼层（冰台 L3 SEWER_CONFIG / 火台 L4 VAULTS_CONFIG；
+# 取较浅的冰台作为规划目标层，执行器按手上宝石选台）
+ENCHANT_FLOOR: Dict[str, int] = {
+    "native.enchant_sword": 3,
+    "native.enchant_armour": 3,
+}
+
+# 矿石方块 -> seed 扫描数据（WorldFacts）中的键，用于跨层"该层有没有这种矿"查询
+ORE_BLOCK_TO_KEY: Dict[int, str] = {
+    COAL: "coal",
+    IRON: "iron",
+    DIAMOND: "diamond",
+    SAPPHIRE: "sapphire",
+    RUBY: "ruby",
+}
+
 # 附魔任务 -> 附魔动作 + 需要附魔台类型
 ENCHANT_ACTIONS: Dict[str, Tuple[int, List[int]]] = {
     "native.enchant_sword": (ENCHANT_SWORD, [ENCHANT_TABLE_FIRE, ENCHANT_TABLE_ICE]),
@@ -328,6 +354,9 @@ ACHIEVEMENT_COMPLETION: Dict[str, List[str]] = {
 for _tid, _ach in DEFEAT_ACHIEVEMENT.items():
     ACHIEVEMENT_COMPLETION.setdefault(_tid, [_ach])
 
+# 消耗品合成：完成判定看背包数量而非一次性的 MAKE_* 成就（箭射掉就得再造）
+CONSUMABLE_CRAFTS: Set[str] = {"native.craft_arrow", "native.craft_torch"}
+
 # 复合任务（and/or 组合）依赖其子任务完成，不需要独立原语；
 # 其完成由 success_predicate 引用成就判定，见 _task_is_complete。
 COMPOSITE_TASKS: Set[str] = {
@@ -352,57 +381,232 @@ DRINK_BLOCKS = [WATER, FOUNTAIN]
 BOW_ARROW_RESERVE = 8               # 箭数低于此值就补（wood+stone 在台上合成）
 
 
+# 停滞检测阈值（无进展 = 楼层/成就/背包/击杀数都不变）
+STALL_NO_PROGRESS_STEPS = 150   # 连续无进展步数 → 判定停滞，开始打破
+STALL_REPEAT_ACTIONS = 40       # 同一 (楼层,位置,朝向,动作) 重复次数 → 判定停滞
+STALL_ABORT_STEPS = 600         # 停滞持续到此步数 → 放弃该 seed（abort_reason）
+
+# 睡眠投影门槛：睡醒血量低于此值就不睡（渴/饿着睡会掉血且无法自救）
+SLEEP_MIN_PROJECTED_HEALTH = 3.0
+
+
 def _norm_pos(p: Any) -> Tuple[int, int]:
     return (int(p[0]), int(p[1]))
+
+
+class _SummaryPredicateState:
+    """把 state_summary（dict）包装成 tasks.base.eval_predicate 可读的 state。
+
+    builtin 任务的成功谓词只用到 achievement / level_ge / and / or / always
+    （achievement 走 info["achievements_list"]，level_ge 读 player_level），
+    因此执行器不必持有 EnvState 也能用**权威谓词**判定完成。
+    若将来出现 field_* 谓词，在此按 path 补映射即可。
+    """
+
+    __slots__ = ("_summary",)
+
+    def __init__(self, summary: Dict[str, Any]) -> None:
+        self._summary = summary
+
+    @property
+    def player_level(self) -> int:
+        return int(self._summary.get("floor", 0))
+
+    @property
+    def inventory(self) -> Dict[str, Any]:
+        return self._summary.get("inventory") or {}
+
+    @property
+    def player_health(self) -> float:
+        return float(self._summary.get("health", 0.0))
+
+    def __getattr__(self, name: str) -> Any:  # 兜底：summary 里的同名字段
+        summary = object.__getattribute__(self, "_summary")
+        if name in summary:
+            return summary[name]
+        raise AttributeError(name)
+
+
+# ---------------------------------------------------------------------------
+# 任务 -> 目标楼层 / 成本感知的任务链排序
+# ---------------------------------------------------------------------------
+
+
+def _preferred_collect_floor(
+    tid: str,
+    current_floor: int,
+    world_facts: Optional[WorldFacts],
+) -> int:
+    """采集任务的目标层：优先"已知有该矿且最近"的层，未知则按静态偏好首位。
+
+    这是把 seed 事实（跨层矿石计数）真正用进规划的地方：没有事实时行为与
+    过去一致（偏好列表首位），有事实时会跳过"已知没有"的层。
+    """
+    preferred = COLLECT_TARGET_FLOORS.get(tid) or [current_floor]
+    if world_facts is None:
+        return preferred[0]
+    blocks = COLLECT_TARGET_BLOCKS.get(tid) or []
+    keys = [ORE_BLOCK_TO_KEY[b] for b in blocks if b in ORE_BLOCK_TO_KEY]
+    if not keys:
+        return preferred[0]
+    scored: List[Tuple[int, int, int, int]] = []
+    for f in preferred:
+        facts = world_facts.floor(f)
+        if facts is None:
+            scored.append((1, abs(f - current_floor), f, f))  # 未知：保留但排在已知之后
+            continue
+        count = sum(facts.ore_count(k) for k in keys)
+        if count <= 0:
+            continue  # 已知该层没有 → 不去
+        scored.append((0, abs(f - current_floor), f, f))
+    if not scored:
+        return preferred[0]
+    scored.sort()
+    return scored[0][3]
+
+
+def task_target_floor(
+    tid: str,
+    current_floor: int = 0,
+    world_facts: Optional[WorldFacts] = None,
+) -> Optional[int]:
+    """任务需要在哪一层执行；与楼层无关（合成/放置/复合）返回 None。
+
+    与执行器的实际导航保持一致：
+    - 战斗任务取"距当前层最近的刷新层"（骷髅 [0, 8] 从地表出发即 L0，
+      而不是 max=8——旧实现按 max 会把地表任务当成 Boss 层任务来制备）；
+    - 采集任务取偏好层（可被 world_facts 修正）。
+    """
+    if tid in REACH_FLOOR:
+        return REACH_FLOOR[tid]
+    if tid in ENTER_FLOOR:
+        return ENTER_FLOOR[tid]
+    if tid in LEARN_FLOOR:
+        return LEARN_FLOOR[tid]
+    if tid in ENCHANT_FLOOR:
+        return ENCHANT_FLOOR[tid]
+    loc = DEFEAT_MOB_LOCATIONS.get(tid)
+    if loc is not None and loc[2]:
+        return min(loc[2], key=lambda f: (abs(f - current_floor), f))
+    if tid in COLLECT_TARGET_FLOORS:
+        return _preferred_collect_floor(tid, current_floor, world_facts)
+    if tid in ("native.open_chest", "native.find_bow", "native.fire_bow"):
+        return 1  # 宝箱/弓：L1 首箱确定性掉落
+    return None
+
+
+def build_task_chain(
+    task_id: str,
+    world_facts: Optional[WorldFacts] = None,
+) -> List[str]:
+    """把依赖闭包排成一条**成本感知**的任务链（确定性）。
+
+    旧实现按 (topological_level, task_id) 排序——字母序决定同层任务先后，
+    于是 "native.enter_gnomish_mines" < "native.place_table" 让计划变成
+    "先下 L2、再回头放工作台做木镐"，深链上表现为反复上下楼。
+
+    新排序是一次贪心拓扑调度：在依赖已满足的候选中，优先
+      1) 与楼层无关的任务（合成/放置/复合）——就地就能做，顺手做完；
+      2) 距"当前虚拟楼层"最近的楼层任务（同层的先做完，即"路过就做掉"），
+         同距离时取较浅层；
+      3) 拓扑层级、task_id（保证确定性）。
+    每选中一个楼层任务就把虚拟楼层移到该层，于是采集→合成→再下行自然成组。
+    """
+    from craftax.tasks.graph import TaskGraph
+
+    graph = TaskGraph.build_from_registry()
+    closure = graph.closure(task_id, include_self=True)
+    deps = {
+        tid: [d for d in graph.dependencies(tid) if d in closure] for tid in closure
+    }
+    remaining: Set[str] = set(closure)
+    done: Set[str] = set()
+    chain: List[str] = []
+    virtual_floor = 0
+    while remaining:
+        ready = sorted(t for t in remaining if all(d in done for d in deps[t]))
+        if not ready:  # 理论不可达（图已校验无环）；保底按拓扑层级推进
+            ready = [
+                min(remaining, key=lambda t: (graph.node(t).topological_level, t))
+            ]
+
+        def _cost(t: str) -> Tuple[int, int, int, int, str]:
+            floor = task_target_floor(t, virtual_floor, world_facts)
+            level = graph.node(t).topological_level
+            if floor is None:
+                return (0, 0, 0, level, t)
+            return (1, abs(floor - virtual_floor), floor, level, t)
+
+        pick = min(ready, key=_cost)
+        floor = task_target_floor(pick, virtual_floor, world_facts)
+        if floor is not None:
+            virtual_floor = floor
+        chain.append(pick)
+        done.add(pick)
+        remaining.discard(pick)
+    return chain
 
 
 class SkillChainExecutor:
     """依赖图驱动的通用任务执行器。"""
 
     def __init__(self, task_id: str, *, max_steps: int = 2000,
-                 seed: Optional[int] = None) -> None:
+                 seed: Optional[int] = None,
+                 floor_map_provider: Optional[
+                     Callable[[int], Optional[Dict[str, Any]]]
+                 ] = None) -> None:
+        """floor_map_provider：按楼层号返回该层 /map 响应（或 None=取不到）。
+
+        这是"扩大观察边界"的注入点：服务端 GET /map?floor=N 能给出任意层的
+        完整 48×48 网格，执行器用它在**下楼之前**知道目标层有没有要采的矿，
+        而不是靠静态偏好表猜。未注入时退回 seed 扫描事实，再退回静态表。
+        """
         self.task_id = task_id
         self.max_steps = max_steps
         self.seed = seed
+        self._floor_map_provider = floor_map_provider
+        self._floor_map_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+        self._floor_map_cache_step: Dict[int, int] = {}
+        self._steps = 0
         self._world_facts: Optional[WorldFacts] = None
         self._abort_reason: Optional[str] = None
         self._tactic: str = "stand"
         self._tactic_floor: Optional[int] = None
         # 弓补给目标：>0 时在已清层补箭到该数量（0=无需补给）
         self._restock_target = 0
+        # 最近一次"备箭 vs 升剑"择优的依据（可读，供日志/调试）
+        self._prep_note: Optional[str] = None
         # 风筝：怪攻击冷却计时（被命中后冷却重置 5）与撤退步数
         self._mob_attack_timer = 0
         self._prev_health: Optional[float] = None
         self._kite_retreats = 0
+        # 防御性回血的滞回状态（模式 / 已用步数 / 冷却）
+        self._regen_mode = False
+        self._regen_steps = 0
+        self._regen_cooldown = 0
+        # 上下楼振荡保护：为补给上行的冷却 + 最近的换层动作步号
+        self._supply_ascend_block = 0
+        self._ladder_action_steps: List[int] = []
+        # 停滞检测（无进展步数 / 重复动作计数 / 打破停滞的方向轮转）
+        self._progress_sig: Optional[Tuple[Any, ...]] = None
+        self._stall_steps = 0
+        self._repeat_counter: "Counter[Tuple[int, Tuple[int, int], int, int]]" = Counter()
+        self._stall_nudge = 0
+        self._stall_reset_done = False
         self._chain: List[str] = []
         self._chain_idx = 0
+        self._adapters: Dict[str, Any] = {}
         self._build_chain()
 
     # -- 任务链构建 --------------------------------------------------------
 
     def _build_chain(self) -> None:
-        from craftax.tasks.graph import TaskGraph
-
-        graph = TaskGraph.build_from_registry()
-        closure = graph.closure(self.task_id, include_self=True)
-        # 拓扑排序：按 topological_level 升序（依赖在前）
-        self._chain = sorted(
-            closure,
-            key=lambda t: (graph.node(t).topological_level, t),
-        )
+        self._chain = build_task_chain(self.task_id, world_facts=self.world_facts())
         # 任务链需要到达的最深楼层（用于升级策略与表层制备）。
-        # 采集任务取"首选矿石层"而非偏好列表最大值（避免为 collect_diamond 的
-        # [2,5,0] 按 L5 制备——执行器实际会先去 L2）。
-        max_floor = 0
-        for tid in self._chain:
-            f = ENTER_FLOOR.get(tid, REACH_FLOOR.get(tid, LEARN_FLOOR.get(tid, 0)))
-            if tid in COLLECT_TARGET_FLOORS:
-                f = max(f, COLLECT_TARGET_FLOORS[tid][0])
-            loc = DEFEAT_MOB_LOCATIONS.get(tid)
-            if loc is not None:
-                f = max(f, max(loc[2]))
-            max_floor = max(max_floor, f)
-        self._max_floor = max_floor
+        wf = self.world_facts()
+        self._max_floor = max(
+            (task_target_floor(tid, 0, wf) or 0) for tid in self._chain
+        )
 
     def world_facts(self) -> Optional[WorldFacts]:
         """当前 seed 的世界事实（离线就绪度/跨层矿石参考）。"""
@@ -424,10 +628,143 @@ class SkillChainExecutor:
         map_payload: Dict[str, Any],
         summary: Dict[str, Any],
     ) -> Optional[int]:
-        """返回下一步动作 id；全部完成返回 None（调用方停止录制）。"""
+        """返回下一步动作 id；全部完成返回 None（调用方停止录制）。
+
+        外层只做停滞看门狗：策略本体在 _next_action_inner。反应式规则级联
+        会出现"原地重复同一动作但状态不变"的僵持（等挡路怪、缺料反复按合成键、
+        等刷怪），这里统一检测并打破，持续太久则中止该 seed。
+        """
         if "map" in map_payload and isinstance(map_payload["map"], list):
             map_payload = dict(map_payload)
             map_payload["map"] = np.asarray(map_payload["map"], dtype=np.int32)
+        self._steps += 1
+        self._update_stall_state(map_payload, summary)
+        action = self._next_action_inner(map_payload, summary)
+        if action is None:
+            return None
+        return self._guard_stall(action, map_payload, summary)
+
+    # -- 停滞看门狗 --------------------------------------------------------
+
+    @staticmethod
+    def _progress_signature(
+        map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> Tuple[Any, ...]:
+        """"是否有进展"的签名：楼层 / 成就数 / 背包 / 本层击杀数。
+
+        故意不含血量与能量——观测到的死亡僵持里血量一直在掉（看着"有变化"，
+        实际毫无进展），把它算进签名就永远检测不到停滞。
+        """
+        inventory = summary.get("inventory") or {}
+        inv_sig = tuple(
+            sorted(
+                (k, int(v) if not isinstance(v, (list, tuple)) else sum(int(x) for x in v))
+                for k, v in inventory.items()
+            )
+        )
+        return (
+            int(summary.get("floor", 0)),
+            len(summary.get("achievements", [])),
+            inv_sig,
+            int(map_payload.get("monsters_killed", 0)),
+        )
+
+    def _update_stall_state(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> None:
+        # 睡眠/休息是"合法的长时间不动"（在回能量/回血）→ 不计入停滞
+        if bool(summary.get("is_sleeping", False)) or bool(summary.get("is_resting", False)):
+            return
+        sig = self._progress_signature(map_payload, summary)
+        if sig != self._progress_sig:
+            self._progress_sig = sig
+            self._stall_steps = 0
+            self._repeat_counter.clear()
+            self._stall_reset_done = False
+        else:
+            self._stall_steps += 1
+
+    def _guard_stall(
+        self, action: int, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> Optional[int]:
+        if bool(summary.get("is_sleeping", False)) or bool(summary.get("is_resting", False)):
+            return action
+        # 上下楼振荡：20 步窗口内换层动作 >= 6 次 → 冻结"为补给上行"一段时间。
+        # 楼层每步都在变时进展签名也每步在变，普通停滞检测抓不到这种循环。
+        if action in (ASCEND, DESCEND):
+            self._ladder_action_steps.append(self._steps)
+            self._ladder_action_steps = [
+                s for s in self._ladder_action_steps if self._steps - s <= 20
+            ]
+            if len(self._ladder_action_steps) >= 6:
+                self._supply_ascend_block = 200
+                self._ladder_action_steps.clear()
+        pos = _norm_pos(summary.get("player_position", [0, 0]))
+        key = (int(summary.get("floor", 0)), pos,
+               int(summary.get("player_direction", 0)), int(action))
+        self._repeat_counter[key] += 1
+        stalled = (
+            self._stall_steps >= STALL_NO_PROGRESS_STEPS
+            or self._repeat_counter[key] >= STALL_REPEAT_ACTIONS
+        )
+        if not stalled:
+            return action
+        if self._stall_steps >= STALL_ABORT_STEPS:
+            self._abort_reason = (
+                f"停滞 {self._stall_steps} 步无进展（楼层/成就/背包/击杀均未变化）"
+            )
+            return None
+        # 干预一次后清空重复计数：否则策略每步仍提出同一动作、计数只增不减，
+        # 看门狗会一直接管（变成"永久乱走"），策略再也没有机会重试。
+        self._repeat_counter.clear()
+        return self._break_stall(action, map_payload, summary)
+
+    def _break_stall(
+        self, action: int, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> int:
+        """打破僵持：清掉可能过期的缓存，再换一个确定性的备选动作。
+
+        顺序：1) 一次性重置换层/战术缓存（可能因为"去过的层"判断而卡死）；
+        2) 有箭且有主动怪 → 点射（挡路怪打掉就通了）；
+        3) 按固定轮转方向走一步（绕开占位的怪/被 BFS 判死的角落）。
+        """
+        if not self._stall_reset_done:
+            self._stall_reset_done = True
+            self._collect_visited = set()
+            self._collect_visited_tid = None
+            self._tactic_floor = None
+            bow = self._bow_combat(map_payload, summary)
+            if bow is not None and bow != SLEEP:
+                return bow
+        inventory = summary.get("inventory") or {}
+        if (self._has_bow(summary) and int(inventory.get("arrows", 0)) >= 1
+                and self._nearest_hostile_dist(map_payload, summary) <= 14):
+            bow = self._bow_combat(map_payload, summary)
+            if bow is not None and bow != SLEEP:
+                return bow
+        map2d = map_payload["map"]
+        pos = _norm_pos(summary.get("player_position", [0, 0]))
+        h, w = len(map2d), len(map2d[0])
+        order = [RIGHT, DOWN, LEFT, UP]
+        blocked_extra = getattr(self, "_mob_cells", None) or set()
+        for i in range(4):
+            move = order[(self._stall_nudge + i) % 4]
+            delta = ACTION_DELTA[move]
+            nxt = (pos[0] + delta[0], pos[1] + delta[1])
+            if not (0 <= nxt[0] < h and 0 <= nxt[1] < w):
+                continue
+            if blocked(int(map2d[nxt[0]][nxt[1]])) or nxt in blocked_extra:
+                continue
+            self._stall_nudge = (self._stall_nudge + i + 1) % 4
+            return move
+        self._stall_nudge = (self._stall_nudge + 1) % 4
+        return action
+
+    def _next_action_inner(
+        self,
+        map_payload: Dict[str, Any],
+        summary: Dict[str, Any],
+    ) -> Optional[int]:
         # 本层活怪占用的格子会挡住玩家移动，寻路时视为不可通行
         self._mob_cells = self._mob_blocked_cells(map_payload)
         # 怪攻击冷却计时：健康比上一步下降说明被近战命中（命中后冷却重置 5）。
@@ -473,11 +810,14 @@ class SkillChainExecutor:
             self._chain_idx += 1
         if (need_descend and floor > 0
                 and int(map_payload.get("monsters_killed", 0)) >= 8):
-            descend = self._descend_to(map_payload, summary,
-                                       REACH_FLOOR.get(self._chain[self._chain_idx],
-                                                       ENTER_FLOOR[self._chain[self._chain_idx]]))
-            if descend is not None:
-                return descend
+            # 注意：不能写 REACH_FLOOR.get(tid, ENTER_FLOOR[tid])——默认值会被
+            # 立即求值，tid 只在 REACH_FLOOR 里时抛 KeyError（explore_dungeon /
+            # dungeon_campaign 一进 L1 就崩）。
+            target = self._floor_of_descend_task(self._chain[self._chain_idx])
+            if target is not None:
+                descend = self._descend_to(map_payload, summary, target)
+                if descend is not None:
+                    return descend
         # 生存维护优先
         survival = self._survival_action(map_payload, summary)
         if survival is not None:
@@ -504,64 +844,91 @@ class SkillChainExecutor:
         action = self._primitive(tid, map_payload, summary)
         return action
 
+    @staticmethod
+    def _floor_of_descend_task(tid: str) -> Optional[int]:
+        """下楼/到达类任务的目标层（REACH_FLOOR 优先，其次 ENTER_FLOOR）。"""
+        if tid in REACH_FLOOR:
+            return REACH_FLOOR[tid]
+        return ENTER_FLOOR.get(tid)
+
     def is_done(self, summary: Dict[str, Any]) -> bool:
         return self._task_is_complete(self.task_id, summary)
 
     def step_count_hint(self) -> int:
         return len(self._chain)
 
-    def estimate_steps(self) -> int:
-        """按依赖链深度估算完成任务所需步数上限（demo/测试用）。
+    # 步数预算的标定项（travel 为单层往返寻路的经验值）
+    SURFACE_PREP_STEPS = 500       # L0 制备（采木/石 + 合成 + 拿弓往返）
+    FLOOR_TRAVEL_STEPS = 140       # 每层走到梯子/矿点的寻路开销
+    PER_TASK_STEPS = 60            # 每个链上任务的交互/微调开销
+    RECOVERY_STEPS_PER_FLOOR = 120  # 批量清怪之间回锚点恢复的往返
 
-        基础 800 + 每深一层清怪约 700 步 + 每个链上任务约 150 步，封顶 30000。
-        深度取自链上任务的目标楼层：enter/reach/learn 楼层，以及采集/战斗任务
-        需要的矿石/怪物分布层（这些任务隐含下行）。
+    def estimate_steps(self) -> int:
+        """步数预算：用战斗模型逐层估算清怪成本，而不是拍一个线性公式。
+
+        每层成本 = combat_model.estimated_steps_bow(层, 预期装备)（弓先制是
+        默认路线）+ 寻路 + 锚点恢复往返；再加表层制备与每任务交互开销。
+        预期装备取"到该层时应有的"保守值（剑 2 / 弓 1 / 力量 3），与
+        FLOOR_GEAR_REQ 的软门槛一致。封顶 30000。
         """
-        max_floor = 0
-        for tid in self._chain:
-            f = ENTER_FLOOR.get(tid, REACH_FLOOR.get(tid, LEARN_FLOOR.get(tid, 0)))
-            if tid in COLLECT_TARGET_FLOORS:
-                f = max(f, max(COLLECT_TARGET_FLOORS[tid]))
-            loc = DEFEAT_MOB_LOCATIONS.get(tid)
-            if loc is not None:
-                f = max(f, max(loc[2]))
-            max_floor = max(max_floor, f)
-        return min(30000, 800 + 700 * max_floor + 150 * len(self._chain))
+        total = float(self.SURFACE_PREP_STEPS + self.PER_TASK_STEPS * len(self._chain))
+        for floor in range(1, self._max_floor + 1):
+            gear = Gear(sword=2, armour=0, strength=3, dexterity=1, intelligence=1,
+                        has_elemental=True, bow=1, bow_enchant=0)
+            total += estimated_steps_bow(floor, gear)
+            total += self.FLOOR_TRAVEL_STEPS + self.RECOVERY_STEPS_PER_FLOOR
+        return int(min(30000, max(600, total)))
 
     # -- 完成判定 ----------------------------------------------------------
 
+    def _adapter(self, tid: str):
+        """缓存 registry 里该任务的适配器（承载权威 success_predicate）。"""
+        adapter = self._adapters.get(tid)
+        if adapter is None:
+            from craftax.tasks import registry
+
+            versions = registry.list_versions(tid)
+            if not versions:
+                return None
+            adapter = registry.get_task_adapter(tid, versions[-1])
+            self._adapters[tid] = adapter
+        return adapter
+
+    def _spec_done(self, tid: str, summary: Dict[str, Any]) -> bool:
+        """按 registry 的 success_predicate 判定完成——与数据集标注同源。
+
+        谓词只需要成就名单与 player_level（builtin 任务用 achievement /
+        level_ge / and / or / always），因此可直接在 state_summary 上求值，
+        无需 EnvState。未注册的 task_id 返回 False。
+        """
+        adapter = self._adapter(tid)
+        if adapter is None:
+            return False
+        info = {"achievements_list": list(summary.get("achievements", []))}
+        return bool(adapter.success(_SummaryPredicateState(summary), info))
+
     def _task_is_complete(self, tid: str, summary: Dict[str, Any]) -> bool:
-        # 资源采集任务：目标任务只需 ≥1（成就达成），前置任务需储备量
+        """任务是否已完成。
+
+        权威口径是 registry 的成功谓词；在此之上，**中间**任务还要满足
+        "执行层可用性"，因为链上的后续步骤消费的是实物而不是成就：
+        - 采集类：需要 RESOURCE_TARGETS 的储备量（成就早就达成也得补货）；
+        - 消耗品合成（箭/火把）：看背包数量而不是一次性的 MAKE_* 成就；
+        - 工具合成：成就或更高等级的同类工具都算达成（宝箱开出铁剑也算）。
+        目标任务本身只看谓词——那才是任务的定义。
+        """
+        spec_done = self._spec_done(tid, summary)
+        if tid == self.task_id:
+            return spec_done
+        inventory = summary.get("inventory") or {}
         if tid in RESOURCE_TARGETS:
             field, target = RESOURCE_TARGETS[tid]
-            if tid == self.task_id:
-                target = 1
-            inventory = summary.get("inventory") or {}
             return int(inventory.get(field, 0)) >= target
-        # 合成任务：以背包工具等级/数量判定（MAKE_* 动作执行后即时更新）
-        if tid in CRAFT_ACTIONS:
-            inventory = summary.get("inventory") or {}
+        if tid in CONSUMABLE_CRAFTS:
             return self._craft_done(tid, inventory)
-        # 组合进食任务：任意食物成就达成即完成
-        if tid in ("native.eat_food", "native.eat_plant", "native.eat_cow",
-                   "native.eat_bat", "native.eat_snail"):
-            achieved = set(summary.get("achievements", []))
-            food_achs = {"EAT_COW", "EAT_PLANT", "EAT_BAT", "EAT_SNAIL"}
-            if tid == "native.eat_food":
-                return any(a in achieved for a in food_achs)
-            return bool(ACHIEVEMENT_COMPLETION.get(tid) and
-                        ACHIEVEMENT_COMPLETION[tid][0] in achieved)
-        if tid in ACHIEVEMENT_COMPLETION:
-            achieved = set(summary.get("achievements", []))
-            return all(a in achieved for a in ACHIEVEMENT_COMPLETION[tid])
-        if tid in REACH_FLOOR:
-            return int(summary.get("floor", 0)) >= REACH_FLOOR[tid]
-        if tid in ENTER_FLOOR:
-            return int(summary.get("floor", 0)) >= ENTER_FLOOR[tid]
-        if tid == "native.survive":
-            return True  # 存活即完成
-        # 其余（含复合任务）：无显式成就判定 → 交给依赖链与动作驱动
-        return False
+        if tid in CRAFT_ACTIONS:
+            return spec_done or self._craft_done(tid, inventory)
+        return spec_done
 
     def _craft_done(self, tid: str, inventory: Dict[str, Any]) -> bool:
         """合成任务完成判定：对应工具/物品等级或数量达标。"""
@@ -600,15 +967,11 @@ class SkillChainExecutor:
         self, map_payload: Dict[str, Any], summary: Dict[str, Any]
     ) -> Optional[int]:
         energy = float(summary.get("energy", 9.0))
-        food = float(summary.get("food", 9.0))
-        drink = float(summary.get("drink", 9.0))
         health = float(summary.get("health", 9.0))
         is_sleeping = bool(summary.get("is_sleeping", False))
         is_resting = bool(summary.get("is_resting", False))
-        inventory = summary.get("inventory") or {}
         floor = int(summary.get("floor", 0))
-        map2d = map_payload["map"]
-        pos = _norm_pos(summary.get("player_position", [0, 0]))
+        # 水/食物由 _supply_action 统一处理（见下方 0) 分支）
 
         if is_sleeping or is_resting:
             return NOOP  # 睡眠/休息中：保持（游戏会把动作变 NOOP）
@@ -617,24 +980,53 @@ class SkillChainExecutor:
         mobs_adj = self._mob_adjacent(map_payload, summary, 1)
 
         # 弓主动防御：弓主战层有弓+箭且主动怪在 14 格内 → 提前点射。
-        # 14 格 = 出生环（10-13）+ 余量：直线上的怪在远距射杀可免接战（0 受击）；
-        # 血不足（<8，回血场景）时不追怪（chase=False），避免走位引发更多接战。
-        # _bow_combat 只射 melee/ranged（不含被动），无射程目标时返回 None。
+        # 14 格 = 出生环（10-13）+ 余量：直线上的怪在远距射杀可免接战（0 受击）。
+        # 这里恒 chase=False：**生存维护不负责追怪**。地表怪持续刷新，追击会把
+        # 整个 episode 变成原地打怪（实测 idle 25%、任务子目标 700 步不动）；
+        # 需要追击的清怪由战斗子目标 _combat_any 负责。
+        # 血足时可追（"all"），血不足只点射不移动——走位会引发更多接战。
         if (self._should_use_bow(floor, summary)
                 and int((summary.get("inventory") or {}).get("arrows", 0)) >= 1
                 and self._nearest_hostile_dist(map_payload, summary) <= 14):
-            proactive = self._bow_combat(map_payload, summary, chase=health >= 8)
+            proactive = self._bow_combat(
+                map_payload, summary,
+                chase="all" if health >= self.REGEN_EXIT_HEALTH else "none",
+            )
             if proactive is not None and proactive != SLEEP:
                 return proactive
 
-        # 1) 能量/健康维护：能量将尽（<3）且血足（≥8）→ 睡（回能量 + 回血）。
+        # 不把"第一次挨打"白送掉：可达敌人已进到 SURVIVAL_ENGAGE_DIST 内且有箭
+        # → 现在就点射/走到点射位。旧规则要等怪贴脸（≤1）或血掉到 6 以下才反击，
+        # 于是 2-4 格的怪总能免费走近并打出第一击（实测 L1 死因：hp 6 时对
+        # 2 格外的兽人无动作，被走近连打两下致死）。
+        # 距离刻意取 3（不是 10）：地表远程怪在 10-13 格持续刷新，追远怪会变成
+        # 无限接战（实测 94 步暴死）。
+        if (int((summary.get("inventory") or {}).get("arrows", 0)) >= 1
+                and self._has_bow(summary)
+                and self._reachable_hostile_within(map_payload, summary,
+                                                   self.SURVIVAL_ENGAGE_DIST)):
+            engage = self._bow_combat(map_payload, summary, chase="all")
+            if engage is not None and engage != SLEEP:
+                return engage
+
+        has_bow = self._has_bow(summary)
+
+        # 0) 补给优先（水/食物）：这一段必须排在"防御回血"和"睡眠"之前。
+        #    机制上 drink 或 food 归零后 recover 变负：醒着 16 步掉 1 血、
+        #    睡着 31 步掉 1 血，而被动回血是 26 步/HP——渴着回血/睡觉是净掉血，
+        #    等于用不可撤销的等待去解一个走几步就能解决的问题（实测死因）。
+        supply = self._supply_action(map_payload, summary)
+        if supply is not None:
+            return supply
+
+        # 1) 能量/健康维护：能量将尽（<3）→ 睡（回能量 + 回血）。
         #    睡中受击 3.5x（L0 僵尸 7）——先清近身怪、再找"距主动怪 >=14 格"的
         #    安全点睡（怪在 >14 会消失，睡中不会被打醒）。floor>0 时先回 L0 锚点
-        #    （已清、怪弱）。能量低但血不足 → 不能安全睡，先清怪回血（见 1c）。
-        #    注意：过早睡（energy<7）会被 3.5x 打醒导致血线崩溃，故只在能量将尽时睡；
-        #    血不足时由 1a 防御性回血先顶到 8。这是 L0 恢复环的关键权衡。
-        has_bow = self._has_bow(summary)
-        if energy < 3:
+        #    （已清、怪弱）。
+        #    睡前先做一次投影（project_sleep）：把整段睡眠时长的口渴/饥饿/掉血
+        #    走完，若睡醒会低于 SLEEP_MIN_PROJECTED_HEALTH 就不睡——SLEEP 一旦
+        #    按下就锁到能量回满，中途无法自救。
+        if energy < 3 and self._sleep_is_safe(summary):
             # 睡前去清近身怪（弓点射 1-2 箭 / 近战），避免睡中被 3.5x 打醒致死
             if self._mob_adjacent(map_payload, summary, 1):
                 a = (self._bow_combat(map_payload, summary) if has_bow
@@ -660,33 +1052,32 @@ class SkillChainExecutor:
         #     （不推进）。先走到距主动怪尽量远的安全点/角落——角落怪只能沿直线
         #     靠近，弓可提前 14 格点射（0 受击）；无安全点则原地 DO 等被动回血
         #     （26 步/HP），回满到 8 后再睡/继续——避免低血+低能量死亡螺旋。
+        #     前提：投影确认"等待确实在回血"（缺水/缺食/能量耗尽时是净掉血，
+        #     此时不能原地等，必须继续推进去找补给，见 0)）。
         monsters_killed = int(map_payload.get("monsters_killed", 0))
         arrows_now = int((summary.get("inventory") or {}).get("arrows", 0))
-        if (health < 8 and monsters_killed >= 8 and energy > 1
-                and arrows_now >= 2 and not mobs_adj):
+        if (self._regen_mode_active(health) and monsters_killed >= 8 and energy > 1
+                and arrows_now >= 2 and not mobs_adj
+                and self._waiting_regenerates(summary)):
+            self._regen_steps += 1
             safe = self._safe_sleep_spot_walk(map_payload, summary, max_steps=8)
             if safe is not None:
                 return safe
             return DO
-        # 1b) 箭补给：已清层 + 补给目标未满 + 无近身怪 → 补箭。
+        # 1b) 箭补给：已清层 + 基础储备未满 + 无近身怪 → 补箭。
         #     弓是生存武器（0-1 箭=待宰），血低也补（0 箭必死，补箭才有机会）。
-        if (has_bow and self._restock_target > 0
-                and arrows_now < self._restock_target
+        #     只补到 BOW_ARROW_RESERVE：清层用的完整弹药预算（L1 23 支）由下楼
+        #     路径负责。生存层若追那个数字就永远追不上——地表持续刷怪、弓持续
+        #     消耗，产量≈消耗，实测 1800 步里 635 步在合成箭、一次没下楼。
+        survival_reserve = min(self._restock_target, BOW_ARROW_RESERVE)
+        if (has_bow and arrows_now < survival_reserve
                 and monsters_killed >= 8 and energy >= 2 and not mobs_adj):
             craft = self._craft_action("native.craft_arrow", map_payload, summary)
             if craft is not None:
                 return craft
-        # 1c) 极低血（<3）→ 暂停推进：仅处理致命维持（food/drink<2）、近身撤退，
-        #     其余原地 DO 等被动回血。有弓时先用弓清近身/射程内怪（无箭则补箭）。
+        # 1c) 极低血（<3）→ 暂停推进：清近身怪 / 撤退，其余原地 DO 等被动回血。
+        #     （致命的缺水/缺食已在 0) 处理，那里优先级更高。）
         if health < 3:
-            if food < 2:
-                a = self._seek_and_do(map_payload, summary, FOOD_BLOCKS)
-                if a is not None:
-                    return a
-            if drink < 2:
-                a = self._seek_and_do(map_payload, summary, DRINK_BLOCKS)
-                if a is not None:
-                    return a
             if mobs_close and self._has_bow(summary):
                 a = self._bow_combat(map_payload, summary)
                 if a is not None and a != SLEEP:
@@ -696,42 +1087,7 @@ class SkillChainExecutor:
                 if retreat is not None:
                     return retreat
             return DO
-        # 2) 口渴：已在水旁 → 喝满（避免反复远途喝水把 drink 拖在 1~3 卡死任务）；
-        #    临界 → 找水；当前层无水则上浅一层（L6 火界等）
-        if drink < 8 and self._near_any(map2d, pos, DRINK_BLOCKS):
-            a = self._seek_and_do(map_payload, summary, DRINK_BLOCKS)
-            if a is not None:
-                return a
-        if drink < 3:
-            a = self._seek_and_do(map_payload, summary, DRINK_BLOCKS)
-            if a is not None:
-                return a
-            if floor > 0:
-                a = self._ascend_to(map_payload, summary, floor - 1)
-                if a is not None:
-                    return a
-        # 3) 饥饿：附近有熟植物 → 吃到 8；被动怪 → 主动进食；临界 → 找食物/等刷新
-        if food < 8 and self._near_any(map2d, pos, FOOD_BLOCKS):
-            a = self._seek_and_do(map_payload, summary, FOOD_BLOCKS)
-            if a is not None:
-                return a
-        if food < 5:
-            a = self._seek_and_eat_mob(map_payload, summary)
-            if a is not None:
-                return a
-        if food < 3:
-            a = self._seek_and_do(map_payload, summary, FOOD_BLOCKS)
-            if a is not None:
-                return a
-            a = self._seek_and_eat_mob(map_payload, summary)
-            if a is not None:
-                return a
-            if floor > 0:
-                a = self._ascend_to(map_payload, summary, floor - 1)
-                if a is not None:
-                    return a
-            # 无任何食物来源：站着等被动怪刷新（不睡：睡觉=待宰）
-            return DO
+        # 2) / 3) 口渴与饥饿已提前到 0) _supply_action（补给优先于回血/睡眠）
         # 4) 清怪中血/能量不足，或箭将耗尽 → 回 L0 锚点恢复/补给
         #    （L0 已清、怪弱，可安全睡觉 + 补箭）。直接走向梯子 ASCEND——
         #    不先撤退（撤退方向可能与梯子相反，来回打转致死）。
@@ -740,9 +1096,9 @@ class SkillChainExecutor:
         if (floor > 0 and monsters_killed < 8
                 and (health < 6 or energy < 3
                      or (self._has_bow(summary) and arrows_now < 4))):
-            # 箭不足导致的回撤 → 回 L0 后补满箭再下
+            # 箭不足导致的回撤 → 回 L0 后补满箭再下（不下调下楼前算出的弹药预算）
             if self._has_bow(summary) and arrows_now < 4:
-                self._restock_target = BOW_ARROW_RESERVE
+                self._restock_target = max(self._restock_target, BOW_ARROW_RESERVE)
             a = self._ascend_to(map_payload, summary, 0)
             if a is not None:
                 return a
@@ -765,6 +1121,170 @@ class SkillChainExecutor:
                 return combat
         return None
 
+    # -- 补给与"不可撤销决策"的有限步前瞻 ----------------------------------
+
+    # 低于该值就值得专程走一趟补给（0 会开始掉血，留出行程余量）
+    SUPPLY_SEEK_THRESHOLD = 5.0
+    # 贴着水源/食物时顺手补到该值（无位移成本）
+    SUPPLY_TOPUP_TARGET = 9.0
+
+    def _supply_action(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> Optional[int]:
+        """水/食物维持。返回 None 表示"当前没有值得做的补给动作"。
+
+        分两档：
+        - 顺手档：已经站在水/熟植物旁 → 直接喝/吃到满（几乎零成本）；
+        - 专程档：低于 SUPPLY_SEEK_THRESHOLD → 走过去补；本层没有来源且更浅层
+          有（NO_DRINK_FLOORS / NO_FOOD_FLOORS 或本层确实找不到）→ 上行一层。
+        食物完全断供（<3 且本层无来源、已在 L0）时原地 DO 等被动怪刷新——
+        这是唯一合理的等待，且由停滞看门狗兜底。
+        """
+        drink = float(summary.get("drink", 9.0))
+        food = float(summary.get("food", 9.0))
+        floor = int(summary.get("floor", 0))
+        map2d = map_payload["map"]
+        pos = _norm_pos(summary.get("player_position", [0, 0]))
+
+        if drink < self.SUPPLY_TOPUP_TARGET and self._near_any(map2d, pos, DRINK_BLOCKS):
+            a = self._seek_and_do(map_payload, summary, DRINK_BLOCKS)
+            if a is not None:
+                return a
+        if food < self.SUPPLY_TOPUP_TARGET and self._near_any(map2d, pos, FOOD_BLOCKS):
+            a = self._seek_and_do(map_payload, summary, FOOD_BLOCKS)
+            if a is not None:
+                return a
+
+        if drink < self.SUPPLY_SEEK_THRESHOLD:
+            a = self._seek_and_do(map_payload, summary, DRINK_BLOCKS)
+            if a is not None:
+                return a
+            if floor > 0:
+                a = self._supply_ascend(map_payload, summary, DRINK_BLOCKS,
+                                        self._nearest_drink_floor(floor))
+                if a is not None:
+                    return a
+        if food < self.SUPPLY_SEEK_THRESHOLD:
+            a = self._seek_and_do(map_payload, summary, FOOD_BLOCKS)
+            if a is not None:
+                return a
+            a = self._seek_and_eat_mob(map_payload, summary)
+            if a is not None:
+                return a
+            if floor > 0:
+                # 食物还能来自被动怪（不在地图方块里），因此不按方块数量否决上行
+                a = self._supply_ascend(map_payload, summary, None,
+                                        self._nearest_food_floor(floor))
+                if a is not None:
+                    return a
+            if food < 3:
+                # 已在 L0 且本层暂无食物来源：等被动怪刷新（不睡：睡觉=待宰）
+                return DO
+        return None
+
+    def _supply_ascend(
+        self,
+        map_payload: Dict[str, Any],
+        summary: Dict[str, Any],
+        blocks: Optional[Sequence[int]],
+        target_floor: int,
+    ) -> Optional[int]:
+        """为补给上行到 target_floor——但先确认"上去真的有"。
+
+        没有这个确认就会出现梯子来回：本层没水 → 上一层；上一层的水也不可达
+        → 计划继续下楼 → 又没水 → 再上去……（实测 seed 3050 每步一次上下楼，
+        且楼层每步都在变，连停滞检测都测不出来）。
+        blocks 为 None 时不按方块否决（食物可来自被动怪）。
+        """
+        if self._supply_ascend_block > 0:
+            self._supply_ascend_block -= 1
+            return None
+        if blocks is not None:
+            count = self._floor_resource_count(target_floor, blocks)
+            if count is not None and count <= 0:
+                return None  # 跨层观察：上去也没有 → 不折返
+        return self._ascend_to(map_payload, summary, target_floor)
+
+    def _nearest_drink_floor(self, floor: int) -> int:
+        """向上找最近的有水层（L6 熔岩海 / L8 Boss 层无水）。"""
+        for f in range(floor - 1, -1, -1):
+            if f not in NO_DRINK_FLOORS:
+                return f
+        return 0
+
+    def _nearest_food_floor(self, floor: int) -> int:
+        """向上找最近的有食物层（L7 冰界无被动怪/植物）。"""
+        for f in range(floor - 1, -1, -1):
+            if f not in NO_FOOD_FLOORS:
+                return f
+        return 0
+
+    # 防御性回血的滞回区间与预算（避免"永远在回血、永远不推进"）
+    REGEN_ENTER_HEALTH = 5.0   # 低于此值进入回血模式
+    REGEN_EXIT_HEALTH = 8.0    # 回到此值退出回血模式
+    REGEN_MAX_STEPS = 150      # 单次回血模式的步数预算，超出就带着中等血量推进
+    REGEN_COOLDOWN_STEPS = 200  # 预算耗尽后的冷却：这段时间不再进入回血模式
+
+    def _regen_mode_active(self, health: float) -> bool:
+        """带滞回的"要不要停下来回血"。
+
+        旧实现是 health < 8 的裸阈值：地表 monsters_killed 初始就是 10（≥8），
+        于是只要掉到 7 就原地回血，回到 8 又被怪打回 7——子目标可以几百步不动
+        （实测 enter_gnomish_mines 在 L0 卡了 700+ 步）。滞回 + 预算 + 冷却把
+        "恢复"限制成有限行为：低于 5 才停，回到 8 才走，且最多停 150 步。
+        """
+        if self._regen_cooldown > 0:
+            self._regen_cooldown -= 1
+            self._regen_mode = False
+            return False
+        if self._regen_mode:
+            if health >= self.REGEN_EXIT_HEALTH:
+                self._regen_mode = False
+                self._regen_steps = 0
+            elif self._regen_steps >= self.REGEN_MAX_STEPS:
+                self._regen_mode = False
+                self._regen_steps = 0
+                self._regen_cooldown = self.REGEN_COOLDOWN_STEPS
+        elif health < self.REGEN_ENTER_HEALTH:
+            self._regen_mode = True
+            self._regen_steps = 0
+        return self._regen_mode
+
+    def _sleep_is_safe(self, summary: Dict[str, Any]) -> bool:
+        """睡下去会不会更糟——SLEEP 的有限步前瞻（见 combat_model.project_sleep）。
+
+        SLEEP 锁死动作直到能量回满（约 11 步/点，实测可达 60+ 步），期间无法
+        喝水/吃饭/反击。因此按真实衰减速率把整段时长走一遍：睡醒血量过低、
+        或睡醒时水/食物见底（醒来即进入掉血状态）→ 不睡，改去补给/推进。
+        """
+        proj = project_sleep(
+            energy=float(summary.get("energy", 9.0)),
+            health=float(summary.get("health", 9.0)),
+            drink=float(summary.get("drink", 9.0)),
+            food=float(summary.get("food", 9.0)),
+            strength=int(summary.get("strength", 1)),
+            dexterity=int(summary.get("dexterity", 1)),
+        )
+        if proj.dies or proj.health_end < SLEEP_MIN_PROJECTED_HEALTH:
+            return False
+        if proj.drink_end <= 0.0 or proj.food_end <= 0.0:
+            return False
+        return True
+
+    def _waiting_regenerates(self, summary: Dict[str, Any], steps: float = 30.0) -> bool:
+        """原地等待是否真的在回血（缺水/缺食/能量耗尽时是净掉血）。"""
+        health = float(summary.get("health", 9.0))
+        projected = projected_awake_health(
+            steps=steps,
+            health=health,
+            drink=float(summary.get("drink", 9.0)),
+            food=float(summary.get("food", 9.0)),
+            energy=float(summary.get("energy", 9.0)),
+            strength=int(summary.get("strength", 1)),
+            dexterity=int(summary.get("dexterity", 1)),
+        )
+        return projected > health
+
     def _mob_within(
         self, map_payload: Dict[str, Any], summary: Dict[str, Any], max_dist: int
     ) -> bool:
@@ -778,6 +1298,35 @@ class SkillChainExecutor:
                 if i < len(masks) and not masks[i]:
                     continue
                 if abs(int(p[0]) - pos[0]) + abs(int(p[1]) - pos[1]) <= max_dist:
+                    return True
+        return False
+
+    # 生存维护里"现在就该反击"的距离（可达敌人）；见 _survival_action 注释
+    SURVIVAL_ENGAGE_DIST = 3
+
+    def _reachable_hostile_within(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any], max_dist: int
+    ) -> bool:
+        """max_dist 内是否有**可达**的主动怪。
+
+        要求可达：隔着墙的怪打不到我们、我们也过不去（地牢常见），
+        对它交战只会原地转圈。
+        """
+        pos = _norm_pos(summary.get("player_position", [0, 0]))
+        mobs = map_payload.get("mob_positions") or {}
+        reachable = None
+        for key in ("melee", "ranged"):
+            entry = mobs.get(key, {})
+            masks = entry.get("masks", [])
+            for i, p in enumerate(entry.get("positions", [])):
+                if i < len(masks) and not masks[i]:
+                    continue
+                c = _norm_pos(p)
+                if abs(c[0] - pos[0]) + abs(c[1] - pos[1]) > max_dist:
+                    continue
+                if reachable is None:
+                    reachable = self._reachable_set(map_payload["map"], pos)
+                if c in reachable:
                     return True
         return False
 
@@ -928,7 +1477,10 @@ class SkillChainExecutor:
             return self._open_chest(map_payload, summary)
         # 下楼 / 到达层
         if tid in ENTER_FLOOR or tid in REACH_FLOOR:
-            return self._descend_to(map_payload, summary, REACH_FLOOR.get(tid, ENTER_FLOOR[tid]))
+            target = self._floor_of_descend_task(tid)
+            if target is None:
+                return None
+            return self._descend_to(map_payload, summary, target)
         # 战斗
         if tid in DEFEAT_TASKS:
             return self._combat(map_payload, summary, tid)
@@ -997,20 +1549,74 @@ class SkillChainExecutor:
                 self._collect_visited = set()
                 return a
             # 本层目标方块都是不可达的（WATER 分隔）：按不足处理，去下一优先层
-        # 本层不足或目标不可达 → 去下一个优先层（深/浅皆可；已去过的层不再去，防上下打转）
+        # 本层不足或目标不可达 → 换层。选层时先看**别的层到底有没有**：
+        # 优先跨层地图（floor_map_provider，服务端可给任意层全图），其次 seed
+        # 扫描事实；"已知没有"的层直接跳过，避免白跑一趟深层（旧实现只能按
+        # 静态偏好表顺序试，错了要靠 _collect_visited 兜住上下打转）。
         if getattr(self, "_collect_visited_tid", None) != tid:
             self._collect_visited = set()
             self._collect_visited_tid = tid
         self._collect_visited.add(floor)
-        target = None
+        candidates: List[Tuple[int, int, int, int]] = []
         for f in preferred:
-            if f != floor and f not in self._collect_visited:
-                target = f
-                break
-        if target is None:
-            # 所有优先层都去过：留本层继续采（尽力而为），不再换层防打转
+            if f == floor or f in self._collect_visited:
+                continue
+            known = self._floor_resource_count(f, target_types)
+            if known is not None and known <= 0:
+                continue  # 已知该层没有 → 不去
+            rank = 0 if known else 1  # 已知有 > 未知
+            candidates.append((rank, abs(f - floor), f, f))
+        if not candidates:
+            # 无更好的层（都去过 / 都已知没有）：留本层继续采（尽力而为）
             return self._seek_and_do(map_payload, summary, target_types)
-        return self._move_to_floor(map_payload, summary, target)
+        candidates.sort()
+        return self._move_to_floor(map_payload, summary, candidates[0][2])
+
+    # -- 跨层观察（扩大边界）------------------------------------------------
+
+    # 跨层地图缓存寿命（步）：地图会因挖掘/放置改变，过期即重新取；
+    # 取图在真实部署里是一次 HTTP 调用，不宜每步都拉。
+    FLOOR_MAP_TTL_STEPS = 60
+
+    def _floor_map(self, floor: int) -> Optional[Dict[str, Any]]:
+        """取指定层的 /map 响应（带 TTL 缓存）。未注入 provider 时返回 None。"""
+        if self._floor_map_provider is None:
+            return None
+        cached_at = self._floor_map_cache_step.get(floor)
+        if cached_at is not None and self._steps - cached_at > self.FLOOR_MAP_TTL_STEPS:
+            self._floor_map_cache.pop(floor, None)
+            self._floor_map_cache_step.pop(floor, None)
+        if floor in self._floor_map_cache:
+            return self._floor_map_cache[floor]
+        self._floor_map_cache_step[floor] = self._steps
+        try:
+            payload = self._floor_map_provider(floor)
+        except Exception:  # noqa: BLE001 - provider 是外部 HTTP 调用，失败即退回未知
+            payload = None
+        if payload is not None and isinstance(payload.get("map"), list):
+            payload = dict(payload)
+            payload["map"] = np.asarray(payload["map"], dtype=np.int32)
+        self._floor_map_cache[floor] = payload
+        return payload
+
+    def _floor_resource_count(
+        self, floor: int, target_types: Sequence[int]
+    ) -> Optional[int]:
+        """指定层上目标方块的数量；无法得知返回 None（未知≠没有）。
+
+        依次尝试：跨层地图（精确）→ seed 扫描的矿石计数（近似，仅矿石）。
+        """
+        payload = self._floor_map(floor)
+        if payload is not None and payload.get("map") is not None:
+            return self._count_blocks(payload["map"], list(target_types))
+        facts = self.world_facts()
+        if facts is not None:
+            floor_facts = facts.floor(floor)
+            if floor_facts is not None:
+                keys = [ORE_BLOCK_TO_KEY[b] for b in target_types if b in ORE_BLOCK_TO_KEY]
+                if keys:
+                    return sum(floor_facts.ore_count(k) for k in keys)
+        return None
 
     def _seek_and_do(
         self,
@@ -1319,13 +1925,68 @@ class SkillChainExecutor:
             if food < 5:
                 return self._wait_action(summary)  # 等被动怪刷新补充食物
 
+        # 血线门（下楼前）：链上还要"穿过"下一层 → 到那层就得清 8 怪，
+        # 而深层没有水/被动怪可依赖，恢复要折返。因此在**当前层（已清、相对安全）**
+        # 恢复到接近满血再下：能量未满就睡（13 步/HP + 回能量），否则原地被动回血。
+        # 实测：带着 4-6 血下 L1 会在抵达后 20 步内被兽人打死。
+        health_now = float(summary.get("health", 9.0))
+        if (self._max_floor > next_floor
+                and health_now < self.REGEN_EXIT_HEALTH
+                and not self._mob_adjacent(map_payload, summary, 1)):
+            if (self._sleep_is_safe(summary)
+                    and self._nearest_hostile_dist(map_payload, summary) >= 14
+                    and float(summary.get("energy", 9.0)) < 9.0):
+                return SLEEP
+            safe = self._safe_sleep_spot_walk(map_payload, summary, max_steps=8)
+            if safe is not None:
+                return safe
+            return DO
+
+        # 弹药经济学（下楼前）：链上还要"穿过"下一层时必须在那层清 8 怪，而
+        # **地牢层没有树 → 箭在下楼后不可再生**（MAKE_ARROW 要 1 木 + 1 石）。
+        # 因此"有弓就跳过深制备"只在弹药可补时成立；不可补时按 arrows_for_clear
+        # （备箭）与 damage_per_clear（升剑）折算到同一货币——每 1 木+1 石 能省下
+        # 的清层受击——择优（combat_model.recommend_clear_prep）。
+        # 石剑与 2 支箭同价（1 木 + 1 石），所以弹药缺口大时"先造石剑"通常更划算。
+        prep = None
+        feedstock = 0
+        if self._max_floor > next_floor:
+            prep = self._clear_prep(next_floor, map_payload, summary)
+            self._prep_note = prep.reason
+            if prep.arrows_min > 0:
+                self._restock_target = max(self._restock_target, prep.arrows_min)
+            # 更深的过路层：木头只有地表有，箭在 L1+ 只能靠背包木料现做 →
+            # 预留这些木不参与"给下一层多备几支箭"（否则采木/合成箭互相消耗打转）。
+            if floor == 0:
+                feedstock = self._arrow_feedstock_target(next_floor, summary)
+        # 备箭：只在有木石的本层补（软门槛，不为了备箭跨层跑——那会引出上下楼循环）。
+        # prefer=="sword" 时先升剑再回来备箭（同样的材料买到更多减伤）；
+        # prefer=="ready" 时不再为清层备箭（剑已与弓等效或已备齐）。
+        # 两档目标：arrows_min（均值）值得专程采料；超出的预留只用手头余料补，
+        # 否则地表刷怪的持续消耗会让"备满预留"永远达不成（补给循环吃掉整局）。
+        if prep is not None and prep.prefer == "arrows" and self._has_bow(summary):
+            arrows_now = int(inventory.get("arrows", 0))
+            spare_materials = (int(inventory.get("wood", 0)) >= feedstock + 1
+                               and int(inventory.get("stone", 0)) >= 1)
+            if (arrows_now < prep.arrows_min
+                    and self._arrow_materials_available(map_payload, summary)) or (
+                    arrows_now < prep.arrows_target and spare_materials):
+                craft = self._craft_action("native.craft_arrow", map_payload, summary)
+                if craft is not None:
+                    return craft
+        # 过路层的木料：带够再下（顺带覆盖深层放工作台的 2 木）。
+        if feedstock > 0 and int(inventory.get("wood", 0)) < feedstock:
+            a = self._collect_resource("native.collect_wood", map_payload, summary)
+            if a is not None:
+                return a
+
         # 下地牢前准备工具与武器链（表层制备，避免无装备硬下深层）。
         # 按链上"最深层需求"（_max_floor）制备——enter_dungeon 的 target 只是
         # L1（只需到达，不强制清怪）→ 木剑即可快速下；L2+（需清 L1 8 怪）→
         # 完整制备。顺序刻意让"剑"尽早升级（击杀越快受击越少）：
         # 木剑 → 木镐 → 石剑(2击杀 L0 僵尸，受击减半) → 石镐 → 铁剑(1击，0受击)。
-        # 弓已覆盖 L1-L3 清怪（箭 1-2 发/怪）→ 跳过铁剑/甲等深制备（链上所需
-        # 合成任务自会按需触发），避免在低血时采铁/煤再被接战致死。
+        # 有弓时不再无条件跳过：由上面的择优给出 sword_target（弹药可补/已备齐
+        # → 0，即退回"跳过深制备"；弹药有缺口 → 石剑/铁剑先做）。
         deep_need = self._max_floor >= 2
         has_bow = self._has_bow(summary)
         pickaxe_level = int(inventory.get("pickaxe", 0))
@@ -1334,25 +1995,37 @@ class SkillChainExecutor:
             craft = self._craft_action("native.craft_wood_sword", map_payload, summary)
             if craft is not None:
                 return craft
-        if deep_need and not has_bow:
-            if pickaxe_level < 1:
+        sword_target = 0 if has_bow else (3 if deep_need else 0)
+        if has_bow and prep is not None:
+            sword_target = prep.sword_target
+        if deep_need and (sword_target > sword_level or not has_bow):
+            need_sword = sword_target > sword_level
+            if pickaxe_level < 1:  # 木镐是采石的前置（石剑/石镐/箭都要石头）
                 craft = self._craft_action("native.craft_wood_pickaxe", map_payload, summary)
                 if craft is not None:
                     return craft
-            if sword_level < 2:
+            if need_sword and sword_level < 2:
                 craft = self._craft_action("native.craft_stone_sword", map_payload, summary)
                 if craft is not None:
                     return craft
-            if pickaxe_level < 2:
+            if pickaxe_level < 2 and (sword_target >= 3 or not has_bow):
                 craft = self._craft_action("native.craft_stone_pickaxe", map_payload, summary)
                 if craft is not None:
                     return craft
-            # 铁剑：本层有铁则做（1击杀僵尸/2击杀兽人，受击大幅下降）；无铁放弃。
+            # 铁剑：本层有铁则做（兽人 2 击杀，单怪受击与弓等效）；无铁放弃。
             has_iron_here = self._count_blocks(map_payload["map"], [IRON]) > 0
-            if sword_level < 3 and has_iron_here:
+            if need_sword and sword_level < 3 and sword_target >= 3 and has_iron_here:
                 craft = self._craft_action("native.craft_iron_sword", map_payload, summary)
                 if craft is not None:
                     return craft
+
+        # 择优选了升剑但本层做不出来（缺石/缺铁）→ 退回备箭，别空手下楼
+        if (prep is not None and prep.prefer == "sword" and has_bow
+                and int(inventory.get("arrows", 0)) < prep.arrows_min
+                and self._arrow_materials_available(map_payload, summary)):
+            craft = self._craft_action("native.craft_arrow", map_payload, summary)
+            if craft is not None:
+                return craft
 
         # 下地牢前尽量穿铁甲（4 件 40% 物抗，深层清怪生存关键）。
         # 仅深层任务（max_floor>=2）尝试：仅本层采铁/煤（_craft_armour_until
@@ -1383,12 +2056,15 @@ class SkillChainExecutor:
         # 缺失项（剑/甲/力量/元素/生存）先尽力补齐；硬门槛（元素/生存 INFEASIBLE）
         # 补不上 → 中止该 seed（批量+锚点恢复只兜底 MARGINAL，不兜底 INFEASIBLE）。
         if self._max_floor > target_floor:
-            ok, missing = check_floor_readiness(target_floor, summary, self.world_facts())
+            ok, missing = check_floor_readiness(
+                target_floor, summary, self.world_facts(),
+                arrows_restockable=self._floor_can_restock_arrows(target_floor),
+            )
             if not ok:
                 action = self._resolve_gate(missing, map_payload, summary, target_floor)
                 if action is not None:
                     return action
-                if any(k in ("elemental", "survival") for k, _ in missing):
+                if any(k in ("elemental", "survival", "ladder") for k, _ in missing):
                     self._abort_reason = (
                         f"floor {target_floor} 就绪门无法通过: {missing}"
                     )
@@ -1568,6 +2244,112 @@ class SkillChainExecutor:
 
     # -- 弓战斗：远程点射（L1 首箱弓，0-1 受击清怪的核心武器）---------------
 
+    ARROW_BUDGET_CAP = 30  # 备箭上限（再多也带不动，且备箭本身要采料）
+    ARROW_FEEDSTOCK_CAP = 8  # 带下楼的木料上限（每 1 木 = 2 箭；+2 供深层放工作台）
+
+    def _gear_for(self, floor: int, summary: Dict[str, Any]) -> Gear:
+        """按 summary 构造战斗模型的装备快照（floor 决定元素能力口径）。"""
+        inventory = summary.get("inventory") or {}
+        return Gear(
+            sword=int(inventory.get("sword", 0)),
+            armour=sum(int(x) for x in inventory.get("armour", [0])),
+            strength=int(summary.get("strength", 1)),
+            dexterity=int(summary.get("dexterity", 1)),
+            intelligence=int(summary.get("intelligence", 1)),
+            has_elemental=has_elemental(summary, floor),
+            bow=int(inventory.get("bow", 0)),
+            bow_enchant=int(summary.get("bow_enchantment", 0)),
+        )
+
+    def _arrow_budget(
+        self, floor: int, summary: Dict[str, Any], restockable: bool = False
+    ) -> int:
+        """清目标层所需箭数（combat_model.arrows_for_clear），不低于基础储备。
+
+        restockable=False（默认，地牢层无木 → 箭不可再生）时按更大的预留系数算。
+        """
+        from craftax.planner.combat_model import arrows_for_clear
+
+        need = arrows_for_clear(floor, self._gear_for(floor, summary), restockable)
+        if need <= 0:
+            return 0
+        return int(min(self.ARROW_BUDGET_CAP, max(BOW_ARROW_RESERVE, need)))
+
+    def _floor_can_restock_arrows(self, floor: int) -> bool:
+        """目标层能否就地补箭（同时有树与石）。
+
+        MAKE_ARROW = 1 木 + 1 石，而地牢层（L1-L5）没有树 —— 这是"备箭 vs 升剑"
+        的决定性事实。有跨层地图（GET /map?floor=N）就实测，没有则按游戏地形
+        约定：只有地表（L0）与火界（L6，FIRE_TREE）可能有木。
+        """
+        trees = self._floor_resource_count(floor, [TREE, FIRE_TREE])
+        stones = self._floor_resource_count(floor, [STONE])
+        if trees is None or stones is None:
+            return floor in (0, 6)
+        return trees > 0 and stones > 0
+
+    def _clear_prep(
+        self, floor: int, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> ClearPrep:
+        """目标层"清 8 怪"的制备择优：备箭还是先造石/铁剑。
+
+        把两个选项折算到同一货币（每 1 木 + 1 石 能省下的清层受击）后比较，
+        依据是 combat_model.arrows_for_clear 与 damage_per_clear；
+        铁剑只在**本层**（制备地点）拿得到铁与煤时才作为候选。
+        max_sword=3：这里只考虑下楼前做得出来的剑（钻石剑属于链上任务，
+        当成目标会让制备链无限打转）。
+        """
+        from craftax.planner.combat_model import recommend_clear_prep
+
+        inventory = summary.get("inventory") or {}
+        map2d = map_payload["map"]
+        iron_here = (int(inventory.get("iron", 0)) >= 1
+                     or self._count_blocks(map2d, [IRON]) > 0)
+        coal_here = (int(inventory.get("coal", 0)) >= 1
+                     or self._count_blocks(map2d, [COAL]) > 0)
+        return recommend_clear_prep(
+            floor,
+            self._gear_for(floor, summary),
+            arrows=int(inventory.get("arrows", 0)),
+            restockable=self._floor_can_restock_arrows(floor),
+            iron_available=iron_here and coal_here,
+            arrow_cap=self.ARROW_BUDGET_CAP,
+            max_sword=3,
+        )
+
+    def _arrow_feedstock_target(self, next_floor: int, summary: Dict[str, Any]) -> int:
+        """带下楼的木料数：过路层还要清怪、而 L1+ 无树时，箭只能靠背包木料现做。
+
+        只统计**还要穿过**的层（f < _max_floor：终点层只需到达，不必清怪），
+        且下一层本身的箭已在本层备齐 → 从 next_floor+1 起算；按其中最贵的一层
+        估算，并留 2 木给深层放工作台。0 = 不必带。
+        """
+        deeper = [f for f in range(next_floor + 1, self._max_floor)
+                  if not self._floor_can_restock_arrows(f)]
+        if not deeper:
+            return 0
+        need = max(self._arrow_budget(f, summary) for f in deeper)
+        if need <= 0:
+            return 0
+        from craftax.planner.combat_model import ARROWS_PER_CRAFT
+
+        wood = int(math.ceil(need / ARROWS_PER_CRAFT)) + 2
+        return int(min(self.ARROW_FEEDSTOCK_CAP, wood))
+
+    def _arrow_materials_available(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> bool:
+        """本层能否就地补箭（背包或本层地图里同时有木与石）。"""
+        inventory = summary.get("inventory") or {}
+        map2d = map_payload["map"]
+        wood_ok = int(inventory.get("wood", 0)) >= 1 or self._count_blocks(
+            map2d, [TREE, FIRE_TREE]
+        ) > 0
+        stone_ok = int(inventory.get("stone", 0)) >= 1 or self._count_blocks(
+            map2d, [STONE]
+        ) > 0
+        return wood_ok and stone_ok
+
     def _has_bow(self, summary: Dict[str, Any]) -> bool:
         inventory = summary.get("inventory") or {}
         return int(inventory.get("bow", 0)) >= 1
@@ -1626,14 +2408,20 @@ class SkillChainExecutor:
         self,
         map_payload: Dict[str, Any],
         summary: Dict[str, Any],
-        chase: bool = True,
+        chase: str = "all",
     ) -> Optional[int]:
         """弓战斗原语：贴脸点射（必中）→ 同行列直线射（<=14，提前射杀免接战）
-        →（chase=True 时）走近近身怪点射。
+        → 按 chase 模式走近目标点射。
 
         返回动作；无弓/无目标/无法射时返回 None（调用方回退近战/等待）。
-        chase=False 用于防御性回血场景：只点射不追，避免走位引发更多接战。
+        chase 模式：
+        - "all"：追近战与远程（清怪子目标用）；
+        - "ranged"：只追**远程**怪（生存维护用）——远程怪会隔空射击，干等只是
+          白挨打；近战怪会自己走过来，不必迎上去（迎上去=多挨首击）；
+        - "none"：只点射不移动。
         """
+        if isinstance(chase, bool):  # 兼容旧调用
+            chase = "all" if chase else "none"
         if not self._has_bow(summary):
             return None
         inventory = summary.get("inventory") or {}
@@ -1684,19 +2472,20 @@ class SkillChainExecutor:
                 if direction == action:
                     return SHOOT_ARROW
                 return action  # 转向
-        # 无贴脸/直线目标：chase=True 时追 5 格内近战怪（走到点射位）与
-        # 8 格内远程怪；chase=False（防御回血）时不追，等怪沿直线/贴脸再点射。
-        if chase and hostiles:
-            c = min(
-                hostiles,
-                key=lambda x: abs(x[0] - pos[0]) + abs(x[1] - pos[1]),
-            )
-            dist = abs(c[0] - pos[0]) + abs(c[1] - pos[1])
-            ch = 8 if c in ranged_set else 5
-            if dist <= ch:
-                walk = self._walk_to_mob(map2d, pos, c)
-                if walk is not None:
-                    return walk
+        # 无贴脸/直线目标：按 chase 模式走近（近战 5 格内、远程 8 格内）。
+        if chase != "none" and hostiles:
+            targets = [c for c in hostiles if chase == "all" or c in ranged_set]
+            if targets:
+                c = min(
+                    targets,
+                    key=lambda x: abs(x[0] - pos[0]) + abs(x[1] - pos[1]),
+                )
+                dist = abs(c[0] - pos[0]) + abs(c[1] - pos[1])
+                ch = 8 if c in ranged_set else 5
+                if dist <= ch:
+                    walk = self._walk_to_mob(map2d, pos, c)
+                    if walk is not None:
+                        return walk
         return None
 
     # -- 战斗：找目标怪 → 走近 → 面向 → DO ---------------------------------
@@ -2339,6 +3128,8 @@ class SkillChainExecutor:
                 return None  # 元素能力无法获得 → 硬中止
             elif kind == "survival":
                 return None  # combat INFEASIBLE → 硬中止（由调用方处理）
+            elif kind == "ladder":
+                return None  # seed 的梯子链断了（world_facts）→ 硬中止
             # strength：力量优先升级已自动处理 → 忽略
         return None
 

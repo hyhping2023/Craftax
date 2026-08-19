@@ -91,6 +91,7 @@ def _craft_tools_spec() -> TaskSpec:
         dependencies=[
             "native.collect_wood",
             "native.place_table",  # 合成需在工作台旁
+            "native.craft_wood_pickaxe",  # 成功谓词要求任一镐：木镐是最低成本达成路径
         ],
     )
 

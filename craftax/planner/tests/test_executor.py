@@ -16,11 +16,14 @@ from craftax.craftax.envs.craftax_symbolic_env import (  # noqa: E402
     CraftaxSymbolicEnvNoAutoReset,
 )
 from craftax.planner.executor import (  # noqa: E402
+    DO,
     LEVEL_UP_DEXTERITY,
     LEVEL_UP_STRENGTH,
     MAKE_WOOD_PICKAXE,
     NOOP,
     PLACE_TABLE,
+    RIGHT,
+    SLEEP,
     SkillChainExecutor,
 )
 
@@ -102,16 +105,48 @@ def _summary(hs):
     }
 
 
+def _floor_map_payload(hs, floor: int) -> dict:
+    """任意楼层的 map payload（等价 GET /map?floor=N）。
+
+    供执行器的跨层观察使用：下楼之前就能知道目标层有没有要采的矿。
+    """
+    import numpy as _np
+
+    from craftax.craftax.constants import BlockType
+
+    map_arr = _np.asarray(hs.map[floor])
+    chest_rows, chest_cols = _np.where(map_arr == BlockType.CHEST.value)
+    return {
+        "floor": floor,
+        "map": map_arr.tolist(),
+        "ladder_down": [int(x) for x in hs.down_ladders[floor]],
+        "ladder_up": [int(x) for x in hs.up_ladders[floor]],
+        "monsters_killed": int(hs.monsters_killed[floor]),
+        "chest_positions": [[int(x), int(y)] for x, y in zip(chest_rows, chest_cols)],
+    }
+
+
 def run_task(task_id: str, seed: int = 2026, max_steps: int = 2000) -> dict:
     env = CraftaxSymbolicEnvNoAutoReset()
     state = env.reset(jax.random.PRNGKey(seed), EnvParams())[1]
-    executor = SkillChainExecutor(task_id)
+    # seed 透传：执行器据此加载 WorldFacts（跨层矿石/梯子事实）；
+    # floor_map_provider：任意层全图，让"该层到底有没有这种矿"成为已知量。
+    holder: dict = {}
+
+    def provider(floor: int):
+        hs = holder.get("hs")
+        if hs is None or not 0 <= floor < hs.map.shape[0]:
+            return None
+        return _floor_map_payload(hs, floor)
+
+    executor = SkillChainExecutor(task_id, seed=seed, floor_map_provider=provider)
     if max_steps <= 0:
         max_steps = executor.estimate_steps()
     key_rng = jax.random.PRNGKey(seed + 1)
     result = {"task_id": task_id, "steps": 0, "done": False, "floor": 0}
     for i in range(max_steps):
         hs = _host(state)
+        holder["hs"] = hs  # 执行器按 TTL 自行失效跨层地图缓存
         payload = _map_payload(hs)
         summ = _summary(hs)
         if executor.is_done(summ):
@@ -384,3 +419,314 @@ def test_boss_task_slow():
         if result["done"]:
             break
     assert result is not None and result["done"], f"defeat_necromancer 未完成: {result}"
+
+
+# ---------------------------------------------------------------------------
+# 回归测试：本轮修复的缺陷（崩溃 / 完成判定 / 排序 / 生存优先级 / 看门狗）
+# ---------------------------------------------------------------------------
+
+
+def _fake_payload(map2d=None, monsters_killed: int = 10, mobs=None,
+                  ladder_down=(10, 10), ladder_up=(30, 30), chests=()):
+    if map2d is None:
+        map2d = np.full((48, 48), 2, dtype=np.int32)  # 全草地
+    empty = {"positions": [], "masks": []}
+    return {
+        "floor": 0,
+        "map": map2d,
+        "mob_positions": mobs or {k: dict(empty) for k in ("melee", "ranged", "passive")},
+        "ladder_down": list(ladder_down),
+        "ladder_up": list(ladder_up),
+        "monsters_killed": monsters_killed,
+        "chest_positions": [list(c) for c in chests],
+    }
+
+
+def _fake_summary(**over):
+    summary = {
+        "floor": 0,
+        "player_position": [24, 24],
+        "player_direction": 4,
+        "health": 9.0, "energy": 9.0, "food": 9.0, "drink": 9.0, "mana": 9.0,
+        "xp": 0, "strength": 5, "dexterity": 1, "intelligence": 1,
+        "is_sleeping": False, "is_resting": False,
+        "sword_enchantment": 0, "bow_enchantment": 0,
+        "learned_spells": [False, False],
+        "achievements": [],
+        "inventory": {"wood": 5, "stone": 5, "coal": 1, "iron": 1, "diamond": 0,
+                      "sapphire": 0, "ruby": 0, "sapling": 0, "pickaxe": 2,
+                      "sword": 2, "bow": 1, "arrows": 8, "torches": 0,
+                      "armour": [0, 0, 0, 0], "books": 0, "potions": [0] * 6},
+    }
+    inv = over.pop("inventory", None)
+    summary.update(over)
+    if inv:
+        summary["inventory"].update(inv)
+    return summary
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    ["native.explore_dungeon", "native.dungeon_campaign", "native.reach_floor_3",
+     "native.reach_floor_5", "native.reach_boss_floor"],
+)
+def test_reach_floor_tasks_never_raise(task_id):
+    """回归：REACH_FLOOR.get(tid, ENTER_FLOOR[tid]) 的默认值被立即求值，
+    使 explore_dungeon / dungeon_campaign 在 floor>=1 时抛 KeyError。"""
+    for floor in range(0, 9):
+        for killed in (10, 3):
+            ex = SkillChainExecutor(task_id)
+            ex.next_action(_fake_payload(monsters_killed=killed),
+                           _fake_summary(floor=floor))
+
+
+def test_composite_goals_complete_via_registry_predicate():
+    """回归：复合/根目标过去恒为"未完成"（_task_is_complete 兜底 return False），
+    即使成就全开也报失败。完成判定现在走 registry 的 success_predicate。"""
+    from craftax.planner.executor import COMPOSITE_TASKS
+
+    full = _fake_summary(
+        floor=8,
+        achievements=[a.name for a in Achievement],
+        inventory={"sword": 4, "pickaxe": 4, "armour": [2, 2, 2, 2]},
+    )
+    for task_id in sorted(COMPOSITE_TASKS):
+        ex = SkillChainExecutor(task_id)
+        assert ex.is_done(full), f"{task_id} 应判定完成"
+    # 反向：什么都没做时不该判定完成
+    empty = _fake_summary(floor=0, achievements=[])
+    assert not SkillChainExecutor("native.master_crafter").is_done(empty)
+
+
+def test_max_floor_uses_nearest_spawn_floor():
+    """回归：战斗任务的 _max_floor 取 max(刷新层) → 骷髅([0,8]) 被当成 L8 任务，
+    触发整套深层制备（实测让地表任务绕道 L1 并暴死）。"""
+    assert SkillChainExecutor("native.defeat_skeleton")._max_floor == 0
+    assert SkillChainExecutor("native.defeat_zombie")._max_floor == 0
+    assert SkillChainExecutor("native.collect_diamond")._max_floor == 2
+    assert SkillChainExecutor("native.defeat_necromancer")._max_floor == 8
+
+
+def test_chain_is_valid_topological_order():
+    """成本感知排序仍须是合法拓扑序（依赖先于消费者）。"""
+    from craftax.tasks.graph import TaskGraph
+
+    graph = TaskGraph.build_from_registry()
+    for task_id in ("native.defeat_necromancer", "native.collect_all_ores",
+                    "native.crafting_mastery", "native.defeat_troll"):
+        chain = SkillChainExecutor(task_id).chain()
+        seen = set()
+        for tid in chain:
+            for dep in graph.dependencies(tid):
+                if dep in chain:
+                    assert dep in seen, f"{task_id}: {tid} 早于其依赖 {dep}"
+            seen.add(tid)
+
+
+def test_chain_groups_work_by_floor():
+    """成本感知排序：装备/合成在"路过该层时"做掉，而不是按 task_id 字母序
+    插在下楼动作之间。旧顺序会先下 L2 再回头放工作台，钻石剑排到 L8 之后。"""
+    chain = SkillChainExecutor("native.defeat_necromancer").chain()
+    idx = {tid: i for i, tid in enumerate(chain)}
+    # 地表制备全部早于第一次下楼
+    for tid in ("native.collect_wood", "native.place_table",
+                "native.craft_wood_pickaxe", "native.collect_stone"):
+        assert idx[tid] < idx["native.enter_dungeon"], tid
+    # 钻石装备在拿到钻石的矿层就做，不拖到 Boss 层
+    assert idx["native.craft_diamond_sword"] < idx["native.enter_graveyard"]
+    assert idx["native.collect_diamond"] < idx["native.craft_diamond_sword"]
+    # 学法术在书层（L3/L4），且早于需要元素能力的火/冰界
+    assert idx["native.learn_fireball"] < idx["native.enter_ice_realm"]
+    assert idx["native.learn_iceball"] < idx["native.enter_fire_realm"]
+
+
+def test_supply_takes_priority_over_regen_and_sleep():
+    """回归（实测死因）：drink=0 时执行器先"原地回血"再"睡觉"，
+    而缺水会让被动回血变成掉血、睡眠更掉血——必须先去喝水。"""
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    map2d[24, 27] = 3  # 右侧 3 格处有水
+    ex = SkillChainExecutor("native.collect_diamond")
+    summ = _fake_summary(health=5.0, energy=2.0, drink=0.0, food=6.0)
+    action = ex._survival_action(_fake_payload(map2d=map2d), summ)
+    assert action not in (SLEEP, None), "应去补水而不是睡觉/干等"
+    # 水在正右方 → 朝右移动/转向或直接 DO 取水
+    assert action in (RIGHT, DO)
+
+
+def test_sleep_projection_refuses_lethal_sleep():
+    """睡眠前瞻：渴着睡（会掉血且无法自救）必须被否掉；补给充足时才睡。"""
+    ex = SkillChainExecutor("native.collect_diamond")
+    assert not ex._sleep_is_safe(_fake_summary(energy=2.0, health=6.0, drink=0.0))
+    assert not ex._sleep_is_safe(_fake_summary(energy=0.0, health=3.0, drink=1.0,
+                                              food=1.0))
+    assert ex._sleep_is_safe(_fake_summary(energy=2.0, health=8.0, drink=9.0,
+                                          food=9.0))
+
+
+def test_stall_watchdog_breaks_and_aborts():
+    """看门狗：状态完全不变时先换动作打破僵持，长期无进展则中止该 seed。"""
+    ex = SkillChainExecutor("native.collect_diamond")
+    payload = _fake_payload()
+    summ = _fake_summary()
+    actions = [ex.next_action(payload, summ) for _ in range(200)]
+    assert ex._stall_steps > 0, "应识别出无进展"
+    assert len(set(a for a in actions if a is not None)) > 1, "应尝试不同动作"
+    for _ in range(600):
+        if ex.next_action(payload, summ) is None:
+            break
+    assert ex.abort_reason() is not None and "停滞" in ex.abort_reason()
+
+
+def test_cross_floor_resource_choice_skips_known_empty_floor():
+    """跨层观察：目标层"已知没有该矿"就不去（旧实现只能按静态偏好表试错）。"""
+    from craftax.planner.executor import _preferred_collect_floor
+    from craftax.planner.world import FloorFacts, WorldFacts
+
+    # collect_iron 偏好 [2, 5, 0]；令 L2 无铁、L5 有铁
+    facts = WorldFacts(seed=-1, floors={
+        0: FloorFacts(floor=0, ore={"iron": 0}, ladder_down_reachable=True),
+        2: FloorFacts(floor=2, ore={"iron": 0}, ladder_down_reachable=True),
+        5: FloorFacts(floor=5, ore={"iron": 4}, ladder_down_reachable=True),
+    })
+    assert _preferred_collect_floor("native.collect_iron", 0, facts) == 5
+    # 没有事实时保持旧行为（偏好表首位）
+    assert _preferred_collect_floor("native.collect_iron", 0, None) == 2
+
+
+def test_floor_map_provider_counts_blocks():
+    """floor_map_provider 注入的任意层地图应被用于资源计数。"""
+    other = np.full((48, 48), 2, dtype=np.int32)
+    other[5, 5] = 9  # IRON
+    ex = SkillChainExecutor(
+        "native.collect_iron",
+        floor_map_provider=lambda f: ({"floor": f, "map": other} if f == 5 else
+                                      {"floor": f, "map": np.full((48, 48), 2,
+                                                                  dtype=np.int32)}),
+    )
+    assert ex._floor_resource_count(5, [9]) == 1
+    assert ex._floor_resource_count(2, [9]) == 0
+
+
+def test_floor_can_restock_arrows_uses_cross_floor_map():
+    """弹药可补性：MAKE_ARROW 要 1 木 + 1 石，地牢层没有树 → 不可补。
+    有跨层地图就实测该层树/石，没有则按地形约定（只有 L0/L6 可能有木）。"""
+    surface = np.full((48, 48), 2, dtype=np.int32)
+    surface[3, 3] = 5   # TREE
+    surface[3, 4] = 4   # STONE
+    dungeon = np.full((48, 48), 4, dtype=np.int32)  # 全石头，无树
+    ex = SkillChainExecutor(
+        "native.enter_gnomish_mines",
+        floor_map_provider=lambda f: {"floor": f,
+                                      "map": surface if f == 0 else dungeon},
+    )
+    assert ex._floor_can_restock_arrows(0) is True
+    assert ex._floor_can_restock_arrows(1) is False
+    # 无 provider（未知）→ 按地形约定
+    ex2 = SkillChainExecutor("native.enter_gnomish_mines")
+    assert ex2._floor_can_restock_arrows(0) is True
+    assert ex2._floor_can_restock_arrows(1) is False
+
+
+def test_clear_prep_prefers_stone_sword_then_arrows():
+    """备箭 vs 升剑的择优接到执行器：L1 不可补弹 + 箭不足 → 先造石剑；
+    石剑到手后转为备箭（旧逻辑"有弓就跳过深制备"在这里会一直备箭）。"""
+    ex = SkillChainExecutor("native.enter_gnomish_mines")  # max_floor=2 → 需清 L1
+    map2d = np.full((16, 16), 2, dtype=np.int32)
+    map2d[0, 0] = 5   # TREE（本层可采木）
+    map2d[0, 1] = 4   # STONE
+    payload = _fake_payload(map2d=map2d, ladder_down=(15, 15))
+    summ = _fake_summary(floor=0, strength=1,
+                         inventory={"sword": 1, "pickaxe": 1, "bow": 1,
+                                    "arrows": 8, "wood": 3, "stone": 3})
+    prep = ex._clear_prep(1, payload, summ)
+    assert prep.prefer == "sword" and prep.sword_target == 2, prep.reason
+    assert prep.arrows_target == 23   # 不可补层按 1.75x 预留
+    # 箭备齐后不再要求深制备（旧行为作为特例保留）
+    summ_stocked = _fake_summary(floor=0, strength=1,
+                                 inventory={"sword": 1, "pickaxe": 1, "bow": 1,
+                                            "arrows": 23, "wood": 3, "stone": 3})
+    assert ex._clear_prep(1, payload, summ_stocked).sword_target == 0
+
+
+def test_descend_prep_crafts_sword_before_stocking_arrows():
+    """下楼前的动作顺序应遵循择优结果：箭缺口大时先造石剑，而不是先合成箭。"""
+    from craftax.planner.executor import (
+        CRAFT_TABLE_BLOCK,
+        MAKE_ARROW,
+        MAKE_STONE_SWORD,
+    )
+
+    map2d = np.full((16, 16), 2, dtype=np.int32)
+    map2d[12, 12] = CRAFT_TABLE_BLOCK   # 工作台就在玩家旁边
+    payload = _fake_payload(map2d=map2d, ladder_down=(15, 15))
+    summ = _fake_summary(floor=0, strength=1, player_position=[12, 13],
+                         inventory={"sword": 1, "pickaxe": 1, "bow": 1,
+                                    "arrows": 8, "wood": 4, "stone": 4})
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    assert ex._descend_to(payload, summ, 2) == MAKE_STONE_SWORD
+    # 石剑到手 → 同样的材料转去备箭
+    summ["inventory"]["sword"] = 2
+    ex2 = SkillChainExecutor("native.enter_gnomish_mines")
+    assert ex2._descend_to(payload, summ, 2) == MAKE_ARROW
+
+
+def test_arrow_feedstock_carried_for_deeper_floors():
+    """过路层还在更深处时（L1 之后还要清 L2），木料只有地表有 →
+    下楼前先把合成箭用的木带够（+2 供深层放工作台）。"""
+    ex = SkillChainExecutor("native.reach_floor_3")   # 需清 L1、L2
+    summ = _fake_summary(floor=0, strength=1,
+                         inventory={"bow": 1, "arrows": 30, "wood": 0})
+    assert ex._arrow_feedstock_target(1, summ) == ex.ARROW_FEEDSTOCK_CAP
+    # 下一层就是最深层（不再有过路层）→ 不必带木料
+    ex_shallow = SkillChainExecutor("native.enter_gnomish_mines")
+    assert ex_shallow._arrow_feedstock_target(2, summ) == 0
+
+
+def test_survival_restock_stops_at_base_reserve():
+    """生存层补箭只补到基础储备（8）：清层用的完整弹药预算由下楼路径负责。
+    否则地表持续刷怪 + 弓持续消耗使"补到 23 支"永远不满足——实测整局 1800 步
+    里 635 步在合成箭、一次没下楼。"""
+    from craftax.planner.executor import (
+        BOW_ARROW_RESERVE,
+        CRAFT_TABLE_BLOCK,
+        MAKE_ARROW,
+    )
+
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    map2d[24, 25] = CRAFT_TABLE_BLOCK
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    ex._restock_target = 23        # 下楼路径算出的清层预算
+    payload = _fake_payload(map2d=map2d)
+    # 已达基础储备 → 不再为补箭停留
+    full = _fake_summary(inventory={"arrows": BOW_ARROW_RESERVE, "wood": 5, "stone": 5})
+    assert ex._survival_action(payload, full) != MAKE_ARROW
+    # 低于基础储备 → 仍然补（0-1 箭等于待宰）
+    low = _fake_summary(inventory={"arrows": 2, "wood": 5, "stone": 5})
+    assert ex._survival_action(payload, low) == MAKE_ARROW
+
+
+def test_defeat_mob_locations_match_game_constants():
+    """DEFEAT_MOB_LOCATIONS 必须与 FLOOR_MOB_MAPPING 一致（单一真相源），
+    且任务依赖图声明的入口层不得比怪的刷新层更深（旧图把兽人标在 L3）。"""
+    from craftax.craftax.constants import FLOOR_MOB_MAPPING
+    from craftax.planner.executor import DEFEAT_MOB_LOCATIONS, ENTER_FLOOR
+    from craftax.tasks.graph import TaskGraph
+
+    mapping = np.asarray(FLOOR_MOB_MAPPING)
+    class_index = {"melee": 1, "ranged": 2}
+    graph = TaskGraph.build_from_registry()
+    for task_id, (mob_class, mob_type, floors) in DEFEAT_MOB_LOCATIONS.items():
+        if mob_class == "boss":
+            continue
+        for floor in floors:
+            if floor == 8:
+                continue  # Boss 层刷 type 0 波次怪，不在 FLOOR_MOB_MAPPING 语义内
+            assert int(mapping[floor][class_index[mob_class]]) == mob_type, (
+                f"{task_id}: L{floor} 的 {mob_class} 不是 type {mob_type}"
+            )
+        deps = graph.closure(task_id)
+        entered = [ENTER_FLOOR[d] for d in deps if d in ENTER_FLOOR]
+        if entered:
+            assert max(entered) <= max(floors), (
+                f"{task_id}: 依赖图要求下到 L{max(entered)}，但怪在 L{floors}"
+            )

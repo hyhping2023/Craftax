@@ -84,7 +84,9 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str, List[str]]] = [
         "Defeat a skeleton.",
         "击败一只骷髅。",
         "骷髅",
-        ["native.enter_dungeon", "native.craft_wood_sword"],
+        # 骷髅是地表(L0)远程怪（FLOOR_MOB_MAPPING[0] = type 0 melee/ranged），
+        # 无需进入地牢；旧依赖 enter_dungeon 会迫使规划下 L1 再折返。
+        ["native.craft_wood_sword"],
     ),
     (
         "native.defeat_gnome_warrior",
@@ -108,7 +110,9 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str, List[str]]] = [
         "Defeat an orc soldier.",
         "击败一名兽人士兵。",
         "兽人士兵",
-        ["native.enter_sewers", "native.craft_stone_sword"],
+        # 兽人在 L1 地牢（FLOOR_MOB_MAPPING[1] = type 2 = orc soldier/mage），
+        # 不在 L3 下水道；旧依赖 enter_sewers 会多下两层再折返。
+        ["native.enter_dungeon", "native.craft_stone_sword"],
     ),
     (
         "native.defeat_orc_mage",
@@ -116,7 +120,7 @@ _SINGLE_DEFEAT_TASKS: List[Tuple[str, str, str, str, str, List[str]]] = [
         "Defeat an orc mage.",
         "击败一名兽人法师。",
         "兽人法师",
-        ["native.enter_sewers", "native.craft_stone_sword"],
+        ["native.enter_dungeon", "native.craft_stone_sword"],
     ),
     (
         "native.defeat_troll",

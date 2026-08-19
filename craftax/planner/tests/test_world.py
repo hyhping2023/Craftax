@@ -1,5 +1,14 @@
-"""world.py 单测：种子事实加载、就绪度评分、候选种子。"""
+"""world.py 单测：种子事实加载、就绪度评分、候选种子。
+
+扫描数据用**仓库内固定 fixture**（tests/fixtures/seed_scan.json，由
+scripts/scan_seeds.py 对 seed 3017/3050/2011/2026/2027/2028 实测产出并提交），
+而不是 data/ 下的运行时产物——.gitignore 里的 `data` 会匹配任意层级的 data 目录，
+新克隆的仓库没有它，本文件过去因此在干净检出上直接失败（所以 fixture 目录也
+不能叫 data）。
+"""
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +20,7 @@ from craftax.planner.world import (
     target_floor_for_task,
 )
 
-SCAN = "data/seed_scan.json"
+SCAN = str(Path(__file__).parent / "fixtures" / "seed_scan.json")
 
 
 def test_world_facts_from_scan():

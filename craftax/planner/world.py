@@ -162,10 +162,10 @@ class WorldFacts:
         （如 seed_scan_2000.json 扩大扫描批次）+ `seed_scan*_chunks/chunk_*.json`，
         按 seed 去重合并。缓存避免 best_seeds 对每个 seed 重复解析 JSON。
         """
-        cache_key = scan_path if scan_path is not None else "__aggregate__"
-        if cache_key in _SCAN_CACHE:
-            return _SCAN_CACHE[cache_key]
         if scan_path is not None:
+            cache_key = scan_path
+            if cache_key in _SCAN_CACHE:
+                return _SCAN_CACHE[cache_key]
             candidate = Path(scan_path)
             if not candidate.exists():
                 _SCAN_CACHE[cache_key] = None
@@ -178,6 +178,11 @@ class WorldFacts:
                 _SCAN_CACHE[cache_key] = None
                 return None
         data_dir = Path(default_data_dir())
+        # 聚合缓存按**解析后的数据目录**分键：否则换了 data_dir（测试
+        # monkeypatch / CRAFTAX_DATA_DIR）仍会拿到上一个目录的聚合结果。
+        cache_key = f"__aggregate__:{data_dir.resolve()}"
+        if cache_key in _SCAN_CACHE:
+            return _SCAN_CACHE[cache_key]
         files = sorted(data_dir.glob("seed_scan*.json"))
         # 分块扫描产物（seed_scan_2000_chunks/chunk_*.json）也纳入
         files += sorted(data_dir.glob("seed_scan*_chunks/chunk_*.json"))

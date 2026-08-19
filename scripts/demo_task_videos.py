@@ -280,11 +280,23 @@ def record_one_task(
     action_names = {a.value: a.name for a in Action}
 
     # 0. 任务执行器（供 planner 驱动 + 步数自动估算）
+    #    seed 透传 → 执行器可用 WorldFacts（跨层矿石/梯子事实）；
+    #    floor_map_provider → GET /map?floor=N，让执行器在下楼前看到目标层全图。
+    #    provider 用后绑定的 sid_holder：执行器要在建会话之前构造（步数估算）。
     skill_chain = None
+    sid_holder: dict[str, str] = {}
     if use_planner:
         from craftax.planner.executor import SkillChainExecutor  # 惰性加载，避免拉起服务前加载 JAX
 
-        skill_chain = SkillChainExecutor(task_id)
+        def _floor_map_provider(floor: int) -> dict | None:
+            sid_now = sid_holder.get("sid")
+            if not sid_now:
+                return None
+            return get_floor_map(sid_now, floor)
+
+        skill_chain = SkillChainExecutor(
+            task_id, seed=seed, floor_map_provider=_floor_map_provider
+        )
     if steps <= 0 and skill_chain is not None:
         steps = skill_chain.estimate_steps()
 
@@ -313,6 +325,7 @@ def record_one_task(
         entry["error"] = f"create_session failed: {resp}"
         return entry
     sid = resp["session_id"]
+    sid_holder["sid"] = sid  # 绑定跨层地图 provider
     s = resp.get("state_summary") or {}
     entry["instruction"] = s.get("instruction", "")
     entry["task_id"] = s.get("task_id", task_id)

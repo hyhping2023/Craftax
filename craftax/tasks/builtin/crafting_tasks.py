@@ -157,14 +157,17 @@ _SINGLE_TASK_DEFS: List[Tuple[str, str, str, str, List[str]]] = [
         "ENCHANT_SWORD",
         "Enchant a sword. / 附魔一把剑。",
         "在附魔台为剑附魔（ENCHANT_SWORD 成就）。",
-        ["native.craft_stone_sword", "native.enter_fire_realm", "native.enter_ice_realm"],
+        # 附魔台在 L3（冰台，SEWER_CONFIG）与 L4（火台，VAULTS_CONFIG），
+        # 任一即可；宝石可由宝箱掉落（约 7.5%/箱）。旧依赖 L6+L7 方向相反：
+        # 附魔是下火/冰界的前置，不是其结果。
+        ["native.craft_stone_sword", "native.enter_sewers", "native.open_chest"],
     ),
     (
         "native.enchant_armour",
         "ENCHANT_ARMOUR",
         "Enchant armour. / 附魔盔甲。",
         "在附魔台为盔甲附魔（ENCHANT_ARMOUR 成就）。",
-        ["native.craft_iron_armour", "native.enter_fire_realm", "native.enter_ice_realm"],
+        ["native.craft_iron_armour", "native.enter_sewers", "native.open_chest"],
     ),
     # 魔法
     (
@@ -172,14 +175,19 @@ _SINGLE_TASK_DEFS: List[Tuple[str, str, str, str, List[str]]] = [
         "LEARN_FIREBALL",
         "Learn fireball. / 学会火球术。",
         "阅读魔法书学会火球术（LEARN_FIREBALL 成就）。",
-        ["native.open_chest", "native.enter_fire_realm"],
+        # 魔法书来自 L3/L4 的首个宝箱（game_logic.add_items_from_chest:
+        # is_looting_book 要求 player_level in (3, 4)），与火/冰界无关；
+        # 火球术反而是下 L7 冰界的前置。
+        ["native.open_chest", "native.enter_sewers"],
     ),
     (
         "native.learn_iceball",
         "LEARN_ICEBALL",
         "Learn iceball. / 学会冰球术。",
         "阅读魔法书学会冰球术（LEARN_ICEBALL 成就）。",
-        ["native.open_chest", "native.enter_ice_realm"],
+        # 第二本书在 L4（READ_BOOK 随机学一种未学法术，两本必学全两术）；
+        # 冰球术是下 L6 火界的前置。
+        ["native.open_chest", "native.enter_vault"],
     ),
     (
         "native.cast_fireball",

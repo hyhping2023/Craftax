@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # 标定系数（对真实运行 adjust；脚本 scripts/measure_combat.py 可回填）
@@ -73,6 +73,23 @@ ARMOR_REDUCTION_PER_PIECE = 0.1    # 铁甲每件 10% 物免
 CLEAR_TARGET = 8                   # 每层需杀怪数
 PASSIVE_REGEN_STEPS_PER_HP = 26.0  # 醒着回 1 血所需步数
 ENERGY_STEPS_PER_POINT = 31.0      # 醒着每消耗 1 能量所需步数
+
+# ---------------------------------------------------------------------------
+# 内在状态衰减/恢复速率（逐条对应 game_logic.update_player_intrinsics，
+# 用于"睡前投影"等有限步前瞻；数值由 test_combat_model 与源码交叉校验）
+#   饥饿累加 >25 掉 1 food；口渴累加 >20 掉 1 drink；疲劳 >30 掉 1 energy；
+#   睡眠时饥饿/口渴累加减半、疲劳 -1/步（energy 每 11 步 +1）；
+#   三项必需品（food>0, drink>0, energy>0 或睡眠）齐备时 recover +1（睡眠 +2），
+#   >25 回 1 血；任一为 0 则 recover -1（睡眠 -0.5），< -15 掉 1 血。
+# ---------------------------------------------------------------------------
+HUNGER_STEPS_PER_POINT = 26.0        # 醒着每掉 1 food 的步数
+THIRST_STEPS_PER_POINT = 21.0        # 醒着每掉 1 drink 的步数
+SLEEP_INTRINSIC_DECAY = 0.5          # 睡眠时饥饿/口渴累加系数
+SLEEP_ENERGY_STEPS_PER_POINT = 11.0  # 睡眠每回 1 能量的步数
+SLEEP_REGEN_STEPS_PER_HP = 13.0      # 睡眠每回 1 血的步数（必需品齐备）
+STARVE_STEPS_PER_HP_AWAKE = 16.0     # 缺必需品时醒着每掉 1 血的步数
+STARVE_STEPS_PER_HP_ASLEEP = 31.0    # 缺必需品时睡眠每掉 1 血的步数
+SLEEP_DAMAGE_MULTIPLIER = 3.5        # 睡眠中受击倍率
 BATCH_ABORT_HEALTH = 4.0           # 清怪中止血量（低于则回上层恢复）
 BATCH_STEPS_OVERHEAD = 40.0        # 每批往返/等待刷怪的固定步数开销（标定项）
 STEPS_PER_KILL_APPROACH = 4.0      # 每怪寻路/追击步数（标定项）
@@ -309,6 +326,246 @@ def estimated_steps_bow(floor: int, gear: Gear, tactic: str = "stand") -> float:
     return CLEAR_TARGET * avg_turns + batches * BATCH_STEPS_OVERHEAD
 
 
+# 箭预算余量：射空/怪走位/被动怪误伤的浪费系数（标定项）
+ARROW_WASTE_MARGIN = 1.25
+# 不可补弹层的预留系数：弹尽即失去武器，且该层无法再合成 → 按尾部而不是均值备。
+# （1.25 是"平均浪费"；在 L1 这类无木层，17 支刚够理论均值，一次走位失手就断供。）
+ARROW_NO_RESTOCK_MARGIN = 1.75
+
+
+def arrows_per_kill(floor: int, gear: Gear) -> float:
+    """本层平均击杀 1 怪所需箭数（按 5 近战 + 3 远程的刷新比例）；打不动返回 0。"""
+    _, melee_hp, mdef, _, ranged_hp, rdef, _ = MOB_STATS[floor]
+    elem = floor in (6, 7)
+    turns_melee = turns_to_kill_bow(melee_hp, gear, mdef, elemental_required=elem)
+    turns_ranged = turns_to_kill_bow(ranged_hp, gear, rdef, elemental_required=elem)
+    if max(turns_melee, turns_ranged) >= 999.0:
+        return 0.0
+    return (5.0 * turns_melee + 3.0 * turns_ranged) / 8.0
+
+
+def arrows_for_clear(floor: int, gear: Gear, restockable: bool = True) -> int:
+    """用弓清满本层 8 怪需要的箭数（含浪费余量）；弓打不动该层返回 0。
+
+    MAKE_ARROW 一次消耗 1 木 + 1 石产出 2 箭（game_logic），所以这个数字
+    直接决定"下楼前要在有木石的层备多少料"。L1 兽人（7/5 HP）在敏捷 1 下
+    约 17 支——而首箱只给 0 支、执行器过去只备 8 支，正是深层清怪半途弹尽的原因。
+
+    restockable=False（目标层无木、箭不可再生）时用更大的预留系数：17 支只是
+    均值，弹尽后剩下的怪只能用剑打，而"剑够不够"由 recommend_clear_prep 决定。
+    """
+    per_kill = arrows_per_kill(floor, gear)
+    if per_kill <= 0.0:
+        return 0
+    margin = ARROW_WASTE_MARGIN if restockable else ARROW_NO_RESTOCK_MARGIN
+    return int(math.ceil(CLEAR_TARGET * per_kill * margin))
+
+
+# ---------------------------------------------------------------------------
+# 弹药经济学：备箭 vs 造石/铁剑的择优（§6.2.6a 出路 a）
+#
+# 关键事实：MAKE_ARROW 一次 1 木 + 1 石 → 2 箭，而**石剑同样只要 1 木 + 1 石**
+# （铁剑再加 1 铁 + 1 煤 + 熔炉）。地牢层（L1-L5）没有树 → 下楼后箭是不可再生
+# 资源：弹尽时剩下的怪只能用剑打。因此"有弓就跳过深制备"在不可补弹的层上不成立。
+#
+# 两个选项换算到同一货币——**每花掉 1 木 + 1 石 能省下的清层受击伤害**：
+#   备箭：2 支箭把 2/arrows_per_kill 只怪从近战转为远程 → 省
+#         (damage_per_kill - damage_per_kill_bow) × 该怪数；
+#   升剑：把**弹尽后的残余击杀**的近战单价降一档 → 省
+#         残余比例 × (damage_per_clear(旧剑) - damage_per_clear(新剑))。
+# 残余为 0（箭够/可就地补）时升剑收益恒为 0 → 自动退回"有弓就跳过深制备"，
+# 即旧行为成为新规则在"弹药可补"这一特例下的推论，而不再是无条件假设。
+# ---------------------------------------------------------------------------
+
+ARROWS_PER_CRAFT = 2               # MAKE_ARROW: 1 木 + 1 石 → 2 箭
+# 升剑成本（以"1 木 + 1 石"为 1 单位）：石剑就是 1 单位；铁剑多 1 铁 + 1 煤，
+# 且铁需石镐 + 熔炉 + 采矿往返 → 记 3 单位额外暴露；钻石剑要下 L2+ 挖 2 钻。
+SWORD_UPGRADE_UNITS: Dict[int, float] = {2: 1.0, 3: 4.0, 4: 7.0}
+# 升剑要赢过备箭这么多才值得：备箭是可分割、随时可停的投入（每 2 支立刻生效），
+# 而升剑是一次性承诺（半程放弃的采铁毫无价值）→ 收益接近时选风险小的那条。
+SWORD_PREFER_MARGIN = 1.25
+# 升剑的绝对门槛：每单位材料至少省下这么多伤害才值得为它多跑一趟采集。
+# 没有这条门槛时，"相对更优"会一路推到钻石剑（每单位省 0.3 伤），把制备变成
+# 无限升级（实测：整局在地表升级链上打转，从未下楼）。
+MIN_SWORD_GAIN_ABS = 1.0
+
+
+def bow_kill_coverage(floor: int, gear: Gear, arrows: int) -> float:
+    """给定箭数，弓能覆盖的击杀比例（0..1，按平均浪费系数折算）。"""
+    per_kill = arrows_per_kill(floor, gear)
+    if per_kill <= 0.0 or arrows <= 0:
+        return 0.0
+    kills = arrows / (per_kill * ARROW_WASTE_MARGIN)
+    return min(1.0, kills / CLEAR_TARGET)
+
+
+def mixed_damage_per_clear(
+    floor: int, gear: Gear, arrows: int, tactic: str = "stand"
+) -> float:
+    """清满 8 怪的期望受击：前 coverage 比例用弓，弹尽后的残余用剑。
+
+    这是"备箭还是升剑"的目标函数——两种投入都只是在压低这个数。
+    """
+    coverage = bow_kill_coverage(floor, gear, arrows)
+    bow = damage_per_clear_bow(floor, gear, tactic) if coverage > 0.0 else 0.0
+    melee = damage_per_clear(floor, gear, tactic)
+    return coverage * bow + (1.0 - coverage) * melee
+
+
+@dataclass(frozen=True)
+class ClearPrep:
+    """一层"清 8 怪"的制备建议（纯数值择优，执行器据此排动作顺序）。"""
+
+    floor: int
+    arrows_have: int
+    arrows_min: int         # 值得专程采料备到的箭数（均值余量 1.25x）
+    arrows_target: int      # 不可补层的预留目标（1.75x）；只用手头余料补到这里
+    coverage: float         # 当前箭数能覆盖的击杀比例
+    damage_now: float       # 按"当前箭 + 当前剑"清满 8 怪的期望受击
+    damage_if_stocked: float  # 备满箭后的期望受击（弓上限）
+    bow_advantage: float    # 清满 8 怪时"用剑" - "用弓"的伤害差（<=0 → 备箭无意义）
+    sword_target: int       # 建议升级到的剑等级（0=此刻升剑不如备箭/无需升）
+    gain_per_unit_arrows: float   # 每 1 木+1 石 换成箭能省的伤害
+    gain_per_unit_sword: float    # 同样成本花在升剑上能省的伤害
+    prefer: str             # "arrows" | "sword" | "ready"
+    reason: str
+
+
+def recommend_clear_prep(
+    floor: int,
+    gear: Gear,
+    arrows: int,
+    restockable: bool = False,
+    iron_available: bool = False,
+    diamond_available: bool = False,
+    tactic: str = "stand",
+    arrow_cap: Optional[int] = None,
+    max_sword: int = 4,
+) -> ClearPrep:
+    """备箭 vs 升剑的择优。
+
+    restockable：目标层能否就地合成箭（同时有木与石）。可补时残余为 0，
+      备箭恒占优（= 旧的"有弓就跳过深制备"）。
+    iron_available / diamond_available：本层（制备地点）能否拿到铁+煤 / 钻石，
+      决定铁剑/钻石剑是否是可选项——不可得的升级不参与比较。
+    arrow_cap：执行器的携带上限（备箭目标据此截断）。
+    max_sword：调用方**当场做得出来**的最高剑等级。给出做不出来的目标会让
+      执行器在制备链上无限打转（实测：钻石剑目标使整局停在地表升级）。
+
+    箭数给两档：arrows_min（均值 1.25x，值得专程采料）与 arrows_target
+    （不可补层的 1.75x 预留，只用手头余料补）。两档是必要的——地表持续刷怪、
+    弓持续消耗，若把预留当硬目标，产量≈消耗会让补给永远不满足（实测：整个
+    episode 变成地表箭工厂，一次没下楼）。
+    """
+    needed = arrows_for_clear(floor, gear, restockable=restockable)
+    arrows_min = arrows_for_clear(floor, gear, restockable=True)
+    arrows_target = needed
+    if arrow_cap is not None:
+        cap = int(arrow_cap)
+        arrows_target = min(arrows_target, cap) if arrows_target > 0 else 0
+        arrows_min = min(arrows_min, cap) if arrows_min > 0 else 0
+    coverage = 1.0 if (restockable and needed > 0) else bow_kill_coverage(
+        floor, gear, arrows
+    )
+    melee_clear = damage_per_clear(floor, gear, tactic)
+    bow_clear = damage_per_clear_bow(floor, gear, tactic) if needed > 0 else melee_clear
+    damage_now = coverage * bow_clear + (1.0 - coverage) * melee_clear
+    residual = max(0.0, 1.0 - coverage)
+    # 弓相对当前剑的优势：<=0 表示剑已经打得和弓一样省血（L1 + 铁剑就是这样，
+    # 兽人 2 击杀 = 2 箭），此时再为"清层"备箭买不到任何减伤，只留生存储备。
+    bow_advantage = melee_clear - bow_clear
+
+    # 备箭的边际收益：2 支箭能把多少比例的击杀从近战转为远程
+    per_kill = arrows_per_kill(floor, gear)
+    if per_kill > 0.0 and residual > 0.0:
+        d_cov = min(
+            residual,
+            (ARROWS_PER_CRAFT / (per_kill * ARROW_WASTE_MARGIN)) / CLEAR_TARGET,
+        )
+        gain_arrows = d_cov * max(0.0, bow_advantage)
+    else:
+        gain_arrows = 0.0
+
+    # 升剑的边际收益：残余击杀的近战单价降一档（除以材料/采矿成本单位）
+    best_sword = 0
+    best_gain = 0.0
+    for level in range(gear.sword + 1, min(max_sword, len(SWORD_DAMAGE) - 1) + 1):
+        cost = SWORD_UPGRADE_UNITS.get(level)
+        if cost is None:
+            continue
+        if level == 3 and not iron_available:
+            continue
+        if level == 4 and not diamond_available:
+            continue
+        upgraded = damage_per_clear(
+            floor,
+            Gear(
+                sword=level,
+                armour=gear.armour,
+                strength=gear.strength,
+                dexterity=gear.dexterity,
+                intelligence=gear.intelligence,
+                has_elemental=gear.has_elemental,
+                bow=gear.bow,
+                bow_enchant=gear.bow_enchant,
+            ),
+            tactic,
+        )
+        gain = residual * max(0.0, melee_clear - upgraded) / cost
+        if gain > best_gain:
+            best_gain, best_sword = gain, level
+
+    want_arrows = bow_advantage > 0.0 and not restockable and arrows < arrows_target
+    if (best_gain >= MIN_SWORD_GAIN_ABS
+            and best_gain > gain_arrows * SWORD_PREFER_MARGIN):
+        prefer = "sword"
+        reason = (
+            f"L{floor}: 箭 {arrows}/{needed} 只覆盖 {coverage:.0%}，残余 "
+            f"{residual:.0%} 要用剑打；升剑 {gear.sword}→{best_sword} 每单位省 "
+            f"{best_gain:.1f} 伤 > 备箭 {gain_arrows:.1f}"
+        )
+    elif want_arrows:
+        prefer = "arrows"
+        best_sword = 0
+        if residual <= 1e-9:
+            reason = (
+                f"L{floor}: 箭 {arrows} 已够均值，不可补层的预留 {arrows_target} 未满"
+                " → 用手头余料继续备箭（弹尽即失去武器）"
+            )
+        else:
+            reason = (
+                f"L{floor}: 箭 {arrows}/{arrows_min}(预留 {arrows_target})，"
+                f"备箭每单位省 {gain_arrows:.1f} 伤 >= 升剑 {best_gain:.1f} → 先备箭"
+            )
+    else:
+        prefer = "ready"
+        best_sword = 0
+        if restockable:
+            reason = f"L{floor}: 本层可就地补箭 → 无需深制备"
+        elif bow_advantage <= 0.0:
+            reason = (
+                f"L{floor}: 当前剑已与弓等效（清层受击 {melee_clear:.0f}）→ "
+                "不再为清层备箭/升剑，只留生存储备"
+            )
+        else:
+            reason = f"L{floor}: 箭 {arrows}/{arrows_target} 已备齐 → 无需深制备"
+    return ClearPrep(
+        floor=floor,
+        arrows_have=int(arrows),
+        arrows_min=int(arrows_min),
+        arrows_target=int(arrows_target),
+        coverage=coverage,
+        damage_now=damage_now,
+        damage_if_stocked=bow_clear if needed > 0 else melee_clear,
+        bow_advantage=bow_advantage,
+        sword_target=best_sword,
+        gain_per_unit_arrows=gain_arrows,
+        gain_per_unit_sword=best_gain,
+        prefer=prefer,
+        reason=reason,
+    )
+
+
 def energy_consumed(steps: float, dexterity: int) -> float:
     """清醒 steps 步消耗的能量（每 ~31 步 1 点，随敏捷减缓）。"""
     return steps / (ENERGY_STEPS_PER_POINT / energy_decay_factor(dexterity))
@@ -340,6 +597,88 @@ def energy_is_bottleneck(
 def passive_regen(steps: float) -> float:
     """清醒 steps 步的被动回血。"""
     return steps / PASSIVE_REGEN_STEPS_PER_HP
+
+
+@dataclass(frozen=True)
+class SleepProjection:
+    """一次 SLEEP 的有限步前瞻结果（纯算术，无需推进模拟器）。
+
+    SLEEP 是不可撤销承诺：动作被锁为 NOOP 直到能量回满或被怪打醒，
+    因此必须在按下之前把整段时长的口渴/饥饿/掉血走完一遍再决定。
+    """
+
+    steps: float          # 预计睡眠时长（回满能量所需步数）
+    health_end: float     # 睡醒时血量（不含被怪打醒的伤害）
+    drink_end: float      # 睡醒时水
+    food_end: float       # 睡醒时食物
+    dies: bool            # 期间是否会掉到 0 血
+
+
+def project_sleep(
+    energy: float,
+    health: float,
+    drink: float,
+    food: float,
+    strength: int = 1,
+    dexterity: int = 1,
+) -> SleepProjection:
+    """投影"现在睡下去"的结果（对应 update_player_intrinsics 的逐步累加）。
+
+    要点：睡眠只解决能量，不解决口渴/饥饿；任一必需品归零时睡眠反而**掉血**
+    （31 步/HP），且睡眠期间无法自救。执行器用它否掉"渴着睡"这类必死决策。
+    """
+    decay = energy_decay_factor(dexterity)
+    mh = max_health(strength)
+    steps = max(0.0, (max_energy(dexterity) - energy)) * SLEEP_ENERGY_STEPS_PER_POINT
+    # 睡眠期间口渴/饥饿按半速累加
+    thirst_steps = THIRST_STEPS_PER_POINT / (SLEEP_INTRINSIC_DECAY * decay)
+    hunger_steps = HUNGER_STEPS_PER_POINT / (SLEEP_INTRINSIC_DECAY * decay)
+    drink_end = max(0.0, drink - steps / thirst_steps)
+    food_end = max(0.0, food - steps / hunger_steps)
+
+    # 分段：必需品齐备的前缀按 13 步/HP 回血；此后按 31 步/HP 掉血
+    if drink > 0 and food > 0:
+        steps_to_empty = min(
+            drink * thirst_steps if drink > 0 else 0.0,
+            food * hunger_steps if food > 0 else 0.0,
+        )
+    else:
+        steps_to_empty = 0.0
+    ok_steps = min(steps, steps_to_empty)
+    bad_steps = max(0.0, steps - ok_steps)
+    health_end = min(mh, health + ok_steps / SLEEP_REGEN_STEPS_PER_HP)
+    health_end -= bad_steps / STARVE_STEPS_PER_HP_ASLEEP
+    return SleepProjection(
+        steps=steps,
+        health_end=health_end,
+        drink_end=drink_end,
+        food_end=food_end,
+        dies=health_end <= 0.0,
+    )
+
+
+def projected_awake_health(
+    steps: float, health: float, drink: float, food: float, energy: float,
+    strength: int = 1, dexterity: int = 1,
+) -> float:
+    """投影"清醒原地待机 steps 步"后的血量。
+
+    用于判定"原地等被动回血"是否真的在回血——缺水/缺食物时被动回血是负的
+    （16 步/HP 掉血 vs 26 步/HP 回血），原地等待即死亡螺旋。
+    """
+    decay = energy_decay_factor(dexterity)
+    mh = max_health(strength)
+    thirst_steps = THIRST_STEPS_PER_POINT / decay
+    hunger_steps = HUNGER_STEPS_PER_POINT / decay
+    if drink > 0 and food > 0 and energy > 0:
+        steps_to_empty = min(drink * thirst_steps, food * hunger_steps,
+                             energy * ENERGY_STEPS_PER_POINT / decay)
+    else:
+        steps_to_empty = 0.0
+    ok_steps = min(steps, steps_to_empty)
+    bad_steps = max(0.0, steps - ok_steps)
+    out = min(mh, health + ok_steps / PASSIVE_REGEN_STEPS_PER_HP)
+    return out - bad_steps / STARVE_STEPS_PER_HP_AWAKE
 
 
 def survival_verdict(floor: int, gear: Gear, tactic: str = "stand") -> str:

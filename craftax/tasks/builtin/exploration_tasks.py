@@ -64,7 +64,7 @@ def _level_spec(
 # 区域进入任务（ENTER_* 成就）。楼层严格递进：下一层依赖上一层入口成就。
 # ---------------------------------------------------------------------------
 
-_ENTER_TASKS: List[List[str]] = [
+_ENTER_TASKS: List[List[Any]] = [
     [
         "enter_dungeon",
         "ENTER_DUNGEON",
@@ -105,14 +105,17 @@ _ENTER_TASKS: List[List[str]] = [
         "ENTER_FIRE_REALM",
         "Enter the fire realm. / 进入火焰领域。",
         "到达火焰领域并踏入其中（ENTER_FIRE_REALM 成就）。",
-        "native.enter_troll_mines",
+        # 火界怪 90% 物免 + 火免 → 必须先具备冰系伤害才可能生存（冰球术；
+        # 执行器也接受冰附魔剑/弓作为等价替代，见 _acquire_elemental_capability）。
+        ["native.enter_troll_mines", "native.learn_iceball"],
     ],
     [
         "enter_ice_realm",
         "ENTER_ICE_REALM",
         "Enter the ice realm. / 进入寒冰领域。",
         "到达寒冰领域并踏入其中（ENTER_ICE_REALM 成就）。",
-        "native.enter_fire_realm",
+        # 冰界怪 90% 物免 + 冰免 → 需火系伤害（火球术或火附魔）。
+        ["native.enter_fire_realm", "native.learn_fireball"],
     ],
     [
         "enter_graveyard",
@@ -128,7 +131,7 @@ _ENTER_TASKS: List[List[str]] = [
 # 放置类任务（PLACE_* 成就）
 # ---------------------------------------------------------------------------
 
-_PLACE_TASKS: List[List[str]] = [
+_PLACE_TASKS: List[List[Any]] = [
     [
         "place_table",
         "PLACE_TABLE",
@@ -141,14 +144,14 @@ _PLACE_TASKS: List[List[str]] = [
         "PLACE_FURNACE",
         "Place a furnace. / 放置一个熔炉。",
         "放置一个熔炉（PLACE_FURNACE 成就）。",
-        "native.craft_wood_pickaxe",  # 需要石头（采石需木镐）
+        ["native.craft_wood_pickaxe", "native.collect_stone"],  # 需石头（采石需木镐）
     ],
     [
         "place_stone",
         "PLACE_STONE",
         "Place a stone. / 放置一块石头。",
         "放置一块石头（PLACE_STONE 成就）。",
-        "native.craft_wood_pickaxe",
+        ["native.craft_wood_pickaxe", "native.collect_stone"],
     ],
     [
         "place_plant",
@@ -171,7 +174,7 @@ _PLACE_TASKS: List[List[str]] = [
 # 其他交互任务（OPEN_CHEST / WAKE_UP 成就）
 # ---------------------------------------------------------------------------
 
-_OTHER_TASKS: List[List[str]] = [
+_OTHER_TASKS: List[List[Any]] = [
     [
         "open_chest",
         "OPEN_CHEST",
@@ -299,10 +302,14 @@ def register_exploration_tasks() -> None:
     from craftax.tasks.registry import register
 
     for row in _SINGLE_ACHIEVEMENT_TASKS:
-        # 行格式：[task_id, achievement, instruction, objective, dep_task_id]
+        # 行格式：[task_id, achievement, instruction, objective, dep]
+        # dep 可为单个 task_id 字符串，或多个前置的列表（"" / 省略表示无前置）。
         task_id, achievement, instruction, objective = row[:4]
         dep = row[4] if len(row) > 4 else ""
-        deps = [dep] if dep else []
+        if isinstance(dep, (list, tuple)):
+            deps = [d for d in dep if d]
+        else:
+            deps = [dep] if dep else []
         spec = _achievement_spec(task_id, achievement, instruction, objective, deps)
         register(spec.task_id, spec.version, lambda spec=spec: BaseTaskAdapter(spec))
 
