@@ -120,6 +120,12 @@ class EnvParams:
 
     god_mode: bool = False
 
+    # 口渴衰减倍率（1.0 = 原版：清醒每 ~21 步掉 1 drink）。<1 让水的压力线性变缓，
+    # 用于长程具身任务——原版速率下满水 9 点只够约 190 步，2000 步的任务要被
+    # 打断十余次去找水，"找水"会挤掉任务本身。默认保持 1.0，基准/RL 训练不受影响；
+    # 具身层在 SessionActor 侧按 contracts.DEFAULT_THIRST_RATE 覆盖。
+    thirst_rate: float = 1.0
+
     fractal_noise_angles: tuple[int, int, int, int] = (None, None, None, None)
 
 

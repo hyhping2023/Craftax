@@ -52,6 +52,15 @@ _HIERARCHY_DEFS: List[Dict[str, Any]] = [
         "dependencies": ['native.place_table', 'native.place_furnace', 'native.place_torch'],
     },
     {
+        "task_id": 'native.build_shelter',
+        "instruction": 'Build a shelter: mine stone and wall yourself into cover. / 建造庇护所：采石并用石块把自己围进掩体。',
+        "objective": '采集石头并放置石块，形成可抵御怪物的掩体（COLLECT_STONE 与 PLACE_STONE 成就同时达成）。近战怪只在相邻格才能攻击、怪的箭矢会被实心方块挡下，因此三面是墙的坑位能把同时接战的怪从 4 只降到 1 只并挡掉三个方向的远程攻击。',
+        "success_predicate": {'type': 'and',
+         'predicates': [{'type': 'achievement', 'name': 'COLLECT_STONE'},
+                        {'type': 'achievement', 'name': 'PLACE_STONE'}]},
+        "dependencies": ['native.craft_wood_pickaxe', 'native.collect_stone', 'native.place_stone'],
+    },
+    {
         "task_id": 'native.clear_surface_threats',
         "instruction": 'Clear the surface threats. Defeat both a zombie and a skeleton. / 清除地表威胁。分别击败一只僵尸和一只骷髅。',
         "objective": '同时达成 DEFEAT_ZOMBIE 与 DEFEAT_SKELETON，清除地表最常见的两种夜间敌人，作为战斗类别的入门目标。',

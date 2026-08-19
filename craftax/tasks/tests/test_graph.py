@@ -14,9 +14,10 @@ from craftax.tasks.graph import (
     category_of,
 )
 
-# 77 个基础任务 + 15 个 agent 提议的分级任务（hierarchy_tasks.py）
+# 77 个基础任务 + 16 个 agent 提议的分级任务（hierarchy_tasks.py）
+# 16 = 原 15 + native.build_shelter（2026-08-19：把"搭掩体防守"显式建成任务节点）
 BASE_TASK_COUNT = 77
-HIERARCHY_TASK_COUNT = 15
+HIERARCHY_TASK_COUNT = 16
 TOTAL_TASK_COUNT = BASE_TASK_COUNT + HIERARCHY_TASK_COUNT
 
 

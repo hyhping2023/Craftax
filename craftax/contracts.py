@@ -18,6 +18,17 @@ from typing import Any, Dict, List, Optional, Protocol
 import numpy as np
 
 # ---------------------------------------------------------------------------
+# 具身层环境参数默认值
+# ---------------------------------------------------------------------------
+
+# 口渴衰减倍率（EnvParams.thirst_rate）的具身层默认值。
+# 原版 1.0 下清醒每 ~21 步掉 1 点水，满水 9 点 ≈ 190 步——2000 步的长程任务
+# 会被"去找水"打断十余次，实测死亡轨迹里"低血 + 缺水 + 夜间"是最常见的组合。
+# 0.25 把它拉到 ~84 步/点（满水 ≈ 760 步），水仍是需要管理的资源，但不再主导行程。
+# RL 基准与 EnvParams() 默认值保持 1.0 不变，只有具身会话按此值覆盖。
+DEFAULT_THIRST_RATE = 0.25
+
+# ---------------------------------------------------------------------------
 # 动作
 # ---------------------------------------------------------------------------
 
@@ -104,6 +115,10 @@ class RecordingConfig:
     gold_frames: bool = False  # 是否额外保存每 step PNG 金标帧
     spool_dir: str = field(default_factory=default_data_dir)
     shard_max_transitions: int = 50_000  # 一个 shard 的 transition 上限（待基准后调整）
+    # 环境参数快照（EnvParams 的 JSON 化，由 SessionActor 填入）。写进 shard
+    # manifest 让数据集**自描述**：同一批数据里混用不同 thirst_rate / day_length /
+    # god_mode 时，光看 transition 是分辨不出来的（动力学不同却同构）。
+    env_params: Dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         self.frame_sample.validate()

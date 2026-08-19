@@ -38,7 +38,15 @@ from craftax.planner.combat_model import (
     projected_awake_health,
     recommend_tactic,
 )
+from craftax.contracts import DEFAULT_THIRST_RATE
 from craftax.planner.planner import check_floor_readiness, has_elemental
+from craftax.planner.shelter import (
+    MIN_SHELTER_WALLS,
+    find_cover_tile,
+    find_dig_pocket,
+    seal_target,
+    wall_count,
+)
 from craftax.planner.world import WorldFacts
 
 # ---------------------------------------------------------------------------
@@ -370,6 +378,7 @@ COMPOSITE_TASKS: Set[str] = {
     "native.iron_gear", "native.crafting_mastery", "native.clear_surface_threats",
     "native.conquer_mid_tier_foes", "native.conquer_dungeon_bosses",
     "native.reach_mid_dungeon", "native.conquer_lower_realms", "native.build_home_base",
+    "native.build_shelter",
 }
 
 # 可食用方块（DO 面向进食）
@@ -552,6 +561,7 @@ class SkillChainExecutor:
 
     def __init__(self, task_id: str, *, max_steps: int = 2000,
                  seed: Optional[int] = None,
+                 thirst_rate: float = DEFAULT_THIRST_RATE,
                  floor_map_provider: Optional[
                      Callable[[int], Optional[Dict[str, Any]]]
                  ] = None) -> None:
@@ -564,6 +574,9 @@ class SkillChainExecutor:
         self.task_id = task_id
         self.max_steps = max_steps
         self.seed = seed
+        # 会话的口渴衰减倍率（EnvParams.thirst_rate）。投影类前瞻必须用同一个值，
+        # 否则会话把水调慢后执行器仍按原版投影，会拒绝本来安全的睡眠/等待。
+        self.thirst_rate = float(thirst_rate)
         self._floor_map_provider = floor_map_provider
         self._floor_map_cache: Dict[int, Optional[Dict[str, Any]]] = {}
         self._floor_map_cache_step: Dict[int, int] = {}
@@ -584,6 +597,12 @@ class SkillChainExecutor:
         self._regen_mode = False
         self._regen_steps = 0
         self._regen_cooldown = 0
+        # 远程压制：最近一次"掉血但无近身怪"（= 被投射物命中）的步号
+        self._ranged_hit_step = -10 ** 9
+        # 夜间驻守的滞回状态（模式 / 已用步数 / 冷却），语义同 _regen_*
+        self._night_hold = False
+        self._night_hold_steps = 0
+        self._night_hold_cooldown = 0
         # 上下楼振荡保护：为补给上行的冷却 + 最近的换层动作步号
         self._supply_ascend_block = 0
         self._ladder_action_steps: List[int] = []
@@ -770,11 +789,17 @@ class SkillChainExecutor:
         # 怪攻击冷却计时：健康比上一步下降说明被近战命中（命中后冷却重置 5）。
         # 计时用于风筝——冷却将到时（<=1）拉开，避免被命中。
         health = float(summary.get("health", 9.0))
-        if self._prev_health is not None and health < self._prev_health - 0.01 \
-                and self._mob_adjacent(map_payload, summary, 1):
+        dropped = self._prev_health is not None and health < self._prev_health - 0.01
+        if dropped and self._mob_adjacent(map_payload, summary, 1):
             self._mob_attack_timer = 5
-        elif self._mob_attack_timer > 0:
-            self._mob_attack_timer -= 1
+        else:
+            if self._mob_attack_timer > 0:
+                self._mob_attack_timer -= 1
+            # 掉血却没有近身怪 → 被远程怪的投射物命中（远程怪在 4-5 格开火）。
+            # 饥/渴/力竭的掉血恒为 1 点/次，投射物 >=2（骷髅 2、兽人法师 3），
+            # 故以 1.5 为界区分二者，避免把断补给误判成远程压制。
+            if dropped and (self._prev_health or 0.0) - health >= 1.5:
+                self._ranged_hit_step = self._steps
         self._prev_health = health
         # 风筝撤退收尾：连续拉开 2 步让怪在冷却归零时追不上
         if self._kite_retreats > 0:
@@ -979,18 +1004,39 @@ class SkillChainExecutor:
         mobs_close = self._mob_within(map_payload, summary, 5)
         mobs_adj = self._mob_adjacent(map_payload, summary, 1)
 
-        # 弓主动防御：弓主战层有弓+箭且主动怪在 14 格内 → 提前点射。
-        # 14 格 = 出生环（10-13）+ 余量：直线上的怪在远距射杀可免接战（0 受击）。
-        # 这里恒 chase=False：**生存维护不负责追怪**。地表怪持续刷新，追击会把
-        # 整个 episode 变成原地打怪（实测 idle 25%、任务子目标 700 步不动）；
-        # 需要追击的清怪由战斗子目标 _combat_any 负责。
-        # 血足时可追（"all"），血不足只点射不移动——走位会引发更多接战。
+        # -1) 掩体优先于反击：被投射物命中（掉血却无近身怪）且不在掩体里 →
+        #     先进掩体。墙会把投射物吃掉（_move_mob_projectile 的 in_wall），
+        #     而追射手要走 4-5 格、路上继续挨打。实测 L1 死因正是这一段：
+        #     hp 10→7→4→1 每一跳都发生在无近身怪时。
+        #     这里的门槛刻意是 2 面墙（不是 3）：**挡住射线就够了**——一个 2 面墙
+        #     的墙角已经封掉两个方向的箭道，而 3 面墙的坑位在地表 8 步内往往不
+        #     存在（实测按 3 面墙找掩体时远程受击率没有下降：4.15→4.16 次/千步）。
+        #     3 面墙的要求留给睡眠/驻守，那里要限制的是近战接战数。
+        if self._ranged_pressure() and not mobs_adj:
+            cover = self._take_cover(map_payload, summary, min_walls=2,
+                                     max_steps=self.RANGED_COVER_STEPS)
+            if cover is not None:
+                return cover
+
+        # 弓主动防御：弓主战层有弓+箭且主动怪进入交战半径 → 提前点射。
+        # 交战半径**按击杀是否有价值区分**：
+        # - 未清层（monsters_killed<8）：14 格 = 出生环（10-13）+ 余量。这里每一
+        #   杀都算进下楼门槛，远距射杀既推进目标又免接战（0 受击）；
+        # - 已清层（如 L0，初始 monsters_killed=10）：**杀怪买不到任何东西**，
+        #   而地表持续刷新 → 按 14 格无差别点射会把整局变成"地表箭工厂"：
+        #   实测新箭道打通后 L0 击杀 17→29、箭耗到 0、一次没下楼。因此已清层
+        #   只打真正够得着我们的怪（远程怪射程 4-5，留 1 格余量）。
+        # 这里不追远怪（chase）：地表怪持续刷新，追击会把整局变成原地打怪。
+        # 血足时可追近怪（"all"），血不足只点射不移动——走位会引发更多接战。
+        clearing_now = int(map_payload.get("monsters_killed", 0)) < 8
+        engage_range = 14 if clearing_now else self.CLEARED_FLOOR_ENGAGE_DIST
         if (self._should_use_bow(floor, summary)
                 and int((summary.get("inventory") or {}).get("arrows", 0)) >= 1
-                and self._nearest_hostile_dist(map_payload, summary) <= 14):
+                and self._nearest_hostile_dist(map_payload, summary) <= engage_range):
             proactive = self._bow_combat(
                 map_payload, summary,
                 chase="all" if health >= self.REGEN_EXIT_HEALTH else "none",
+                max_range=engage_range,
             )
             if proactive is not None and proactive != SLEEP:
                 return proactive
@@ -1005,7 +1051,8 @@ class SkillChainExecutor:
                 and self._has_bow(summary)
                 and self._reachable_hostile_within(map_payload, summary,
                                                    self.SURVIVAL_ENGAGE_DIST)):
-            engage = self._bow_combat(map_payload, summary, chase="all")
+            engage = self._bow_combat(map_payload, summary, chase="all",
+                                      max_range=engage_range)
             if engage is not None and engage != SLEEP:
                 return engage
 
@@ -1042,12 +1089,20 @@ class SkillChainExecutor:
             safe = self._safe_sleep_spot_walk(map_payload, summary, max_steps=20)
             if safe is not None:
                 return safe
-            # 当前已足够远（>=14）→ 就地睡
-            if self._nearest_hostile_dist(map_payload, summary) >= 14:
+            # 找不到"距怪 >=14"的安全点 → 退而求其次进掩体：三面墙的坑位只剩
+            # 一个开口，睡中最多被一只怪打醒，且三个方向挡箭。
+            cover = self._take_cover(map_payload, summary)
+            if cover is not None:
+                return cover
+            # 当前已足够远（>=14）或身处掩体 → 就地睡
+            if (self._nearest_hostile_dist(map_payload, summary) >= 14
+                    or self._in_shelter(map_payload, summary)):
                 return SLEEP
-            # 不够远：血足才就地睡（扛一次 3.5x 打醒）；血低等清怪后睡
-            if health >= 8:
-                return SLEEP
+            # 不够远且无掩体 → **不睡**。旧规则是"血足就睡，扛一次 3.5x 打醒"，
+            # 但 SLEEP 一按就锁到能量回满（60+ 步），怪只要在 14 格内就一定走到；
+            # 实测 seed 2011 满血 10 被僵尸一击打到 3（2 伤 ×3.5）随即补刀，
+            # 259 步暴毙。宁可顶着低能量继续推进：能量归零只是每 16 步掉 1 血
+            # 的慢性消耗，且随时可自救，而睡眠中的 3.5x 是不可撤销的。
         # 1a) 血不足（<8）且在已清层（锚点）且箭尚足（>=2）→ 防御性原地回血
         #     （不推进）。先走到距主动怪尽量远的安全点/角落——角落怪只能沿直线
         #     靠近，弓可提前 14 格点射（0 受击）；无安全点则原地 DO 等被动回血
@@ -1063,7 +1118,19 @@ class SkillChainExecutor:
             safe = self._safe_sleep_spot_walk(map_payload, summary, max_steps=8)
             if safe is not None:
                 return safe
+            cover = self._take_cover(map_payload, summary)
+            if cover is not None:
+                return cover
             return DO
+        # 1a') 夜间条件驻守：L0 夜间近战刷新 0.02 → 0.12/步，天黑后在旷野推进
+        #      等于持续吃刷新。血/能量不满就进掩体睡到天亮；带滞回 + 预算 +
+        #      冷却（同 _regen_mode_active 的教训：裸阈值会让子目标永远不推进）。
+        if self._night_hold_active(summary) and not mobs_adj:
+            cover = self._take_cover(map_payload, summary)
+            if cover is not None:
+                return cover
+            if self._in_shelter(map_payload, summary) and self._sleep_is_safe(summary):
+                return SLEEP
         # 1b) 箭补给：已清层 + 基础储备未满 + 无近身怪 → 补箭。
         #     弓是生存武器（0-1 箭=待宰），血低也补（0 箭必死，补箭才有机会）。
         #     只补到 BOW_ARROW_RESERVE：清层用的完整弹药预算（L1 23 支）由下楼
@@ -1264,6 +1331,7 @@ class SkillChainExecutor:
             food=float(summary.get("food", 9.0)),
             strength=int(summary.get("strength", 1)),
             dexterity=int(summary.get("dexterity", 1)),
+            thirst_rate=self.thirst_rate,
         )
         if proj.dies or proj.health_end < SLEEP_MIN_PROJECTED_HEALTH:
             return False
@@ -1282,6 +1350,7 @@ class SkillChainExecutor:
             energy=float(summary.get("energy", 9.0)),
             strength=int(summary.get("strength", 1)),
             dexterity=int(summary.get("dexterity", 1)),
+            thirst_rate=self.thirst_rate,
         )
         return projected > health
 
@@ -1303,6 +1372,9 @@ class SkillChainExecutor:
 
     # 生存维护里"现在就该反击"的距离（可达敌人）；见 _survival_action 注释
     SURVIVAL_ENGAGE_DIST = 3
+    # 已清层（monsters_killed>=8，如 L0）的交战半径：那里的击杀不计入任何门槛，
+    # 只有"够得着我们的怪"值得花箭。6 = 远程怪射程 5 + 1 格余量。
+    CLEARED_FLOOR_ENGAGE_DIST = 6
 
     def _reachable_hostile_within(
         self, map_payload: Dict[str, Any], summary: Dict[str, Any], max_dist: int
@@ -1387,6 +1459,146 @@ class SkillChainExecutor:
             return DELTA_TO_ACTION[best_delta]
         return None
 
+    # -- 掩体 / 庇护所 ------------------------------------------------------
+    #
+    # 机制依据（game_logic.py 已核实，详见 planner/shelter.py 模块文档）：
+    # 近战怪只在曼哈顿距离 ==1 时攻击、投射物撞 solid 即消失、怪在 10-14 格环上
+    # 刷新且 75% 概率朝玩家走。因此"三面墙的坑位"同时做到三件事：
+    # 同时接战数 4→1、三个方向挡箭、把"等刷怪"变成安全行为。
+    # 放置只能封朝向格（move_player 能走就走），所以坑位靠**找**天然凹陷或
+    # **挖**石堆得到，放石只用于把 2 面墙补成 3 面。
+
+    COVER_SEARCH_STEPS = 8        # 找掩体的限步半径（移动本身就是暴露）
+    RANGED_COVER_STEPS = 12       # 远程压制下的半径：多走几步换"箭道被挡"值得
+    RANGED_PRESSURE_WINDOW = 8    # 最近这么多步内被投射物命中 → 判定远程压制
+    DAY_LENGTH = 300              # EnvParams.day_length 默认值
+    NIGHT_LIGHT_THRESHOLD = 0.3   # light_level 低于此值视为夜
+    NIGHT_HOLD_MAX_STEPS = 120    # 单次夜间驻守的步数预算
+    NIGHT_HOLD_COOLDOWN = 200     # 预算耗尽后的冷却
+
+    @staticmethod
+    def _hostile_cells(map_payload: Dict[str, Any]) -> List[Tuple[int, int]]:
+        """本层存活的主动怪坐标。"""
+        cells: List[Tuple[int, int]] = []
+        mobs = map_payload.get("mob_positions", {})
+        for key in ("melee", "ranged"):
+            entry = mobs.get(key, {})
+            masks = entry.get("masks", [])
+            for i, p in enumerate(entry.get("positions", [])):
+                if i < len(masks) and not masks[i]:
+                    continue
+                cells.append(_norm_pos(p))
+        return cells
+
+    def _cover_walls(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> int:
+        """玩家当前所站格的墙数（0-4）。"""
+        pos = _norm_pos(summary.get("player_position", [0, 0]))
+        return wall_count(map_payload["map"], pos)
+
+    def _in_shelter(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> bool:
+        return self._cover_walls(map_payload, summary) >= MIN_SHELTER_WALLS
+
+    def _ranged_pressure(self) -> bool:
+        """最近是否被远程怪的投射物命中（见 _next_action_inner 的掉血分流）。"""
+        return self._steps - self._ranged_hit_step <= self.RANGED_PRESSURE_WINDOW
+
+    def _take_cover(
+        self,
+        map_payload: Dict[str, Any],
+        summary: Dict[str, Any],
+        min_walls: int = MIN_SHELTER_WALLS,
+        max_steps: Optional[int] = None,
+    ) -> Optional[int]:
+        """进掩体：找坑位 → 挖坑位 → 放石封口。已在掩体或都不可行时返回 None。"""
+        map2d = map_payload["map"]
+        pos = _norm_pos(summary.get("player_position", [0, 0]))
+        if wall_count(map2d, pos) >= min_walls:
+            return None  # 已在掩体里
+        steps = self.COVER_SEARCH_STEPS if max_steps is None else max_steps
+        mob_cells = getattr(self, "_mob_cells", None)
+        hostiles = self._hostile_cells(map_payload)
+        inventory = summary.get("inventory") or {}
+
+        # ① 天然坑位（凹陷/走廊尽头）：不消耗任何资源，优先
+        cell = find_cover_tile(
+            map2d, pos, hostiles, max_steps=steps,
+            min_walls=min_walls, extra_blocked=mob_cells,
+        )
+        if cell is not None:
+            walk = self._walk_to(map2d, pos, cell)
+            if walk is not None:
+                return walk
+
+        # ② 向石堆里挖一格（需木镐）：旷野里唯一能**造出**三面墙坑位的手段，
+        #    且顺带 +1 石头。挖出的坑位下一拍会被 ① 找到并走进去。
+        if int(inventory.get("pickaxe", 0)) >= 1:
+            pocket = find_dig_pocket(
+                map2d, pos, max_steps=steps, extra_blocked=mob_cells
+            )
+            if pocket is not None:
+                stand, stone = pocket
+                if pos == stand:
+                    delta = (stone[0] - pos[0], stone[1] - pos[1])
+                    action = DELTA_TO_ACTION.get(delta)
+                    if action is not None:
+                        direction = int(summary.get("player_direction", 0))
+                        return DO if direction == action else action
+                else:
+                    walk = self._walk_to(map2d, pos, stand)
+                    if walk is not None:
+                        return walk
+
+        # ③ 放石封口：只能封**朝向格**，所以仅用于把 2 面墙的角落补成 3 面
+        if int(inventory.get("stone", 0)) >= 1 and wall_count(map2d, pos) >= min_walls - 1:
+            delta = ACTION_DELTA.get(int(summary.get("player_direction", 0)))
+            if delta is not None and seal_target(map2d, pos, delta, mob_cells):
+                return PLACE_STONE
+        return None
+
+    def _is_night(self, summary: Dict[str, Any]) -> bool:
+        """当前是否夜间（light_level < 阈值）。
+
+        与 game_logic_utils.calculate_light_level 同式；summary 无 timestep
+        （旧客户端）时按白天处理——夜间策略只做减法，缺数据即退回原行为。
+        """
+        timestep = summary.get("timestep")
+        if timestep is None:
+            return False
+        progress = (int(timestep) / float(self.DAY_LENGTH)) % 1 + 0.3
+        light = 1.0 - abs(math.cos(math.pi * progress)) ** 3
+        return light < self.NIGHT_LIGHT_THRESHOLD
+
+    def _night_hold_active(self, summary: Dict[str, Any]) -> bool:
+        """要不要夜间驻守（带滞回 + 预算 + 冷却，语义同 _regen_mode_active）。
+
+        L0 夜间近战刷新率 0.02 → 0.12/步（constants.FLOOR_MOB_SPAWN_CHANCE 的
+        夜间项 ×(1-light)^2）：天黑后在旷野推进等于持续吃刷新。但"天黑就躲"
+        会吃掉一局约 30% 的步数（实测 light<0.3 的步占比 546/2000），
+        所以只在血/能量不满时驻守（条件驻守）。
+        """
+        if self._night_hold_cooldown > 0:
+            self._night_hold_cooldown -= 1
+            self._night_hold = False
+            return False
+        night = self._is_night(summary)
+        if self._night_hold:
+            if not night or self._night_hold_steps >= self.NIGHT_HOLD_MAX_STEPS:
+                self._night_hold = False
+                self._night_hold_steps = 0
+                self._night_hold_cooldown = self.NIGHT_HOLD_COOLDOWN
+            else:
+                self._night_hold_steps += 1
+        elif (night and int(summary.get("floor", 0)) == 0
+                and (float(summary.get("health", 9.0)) < 8
+                     or float(summary.get("energy", 9.0)) < 5)):
+            self._night_hold = True
+            self._night_hold_steps = 0
+        return self._night_hold
+
     def _mob_adjacent(
         self, map_payload: Dict[str, Any], summary: Dict[str, Any], max_dist: int = 2
     ) -> bool:
@@ -1462,7 +1674,7 @@ class SkillChainExecutor:
             if a is not None:
                 return a
             # 无熟植物也无被动怪：等待刷新（先保持存活）
-            return self._wait_action(summary)
+            return self._wait_action(summary, map_payload)
         # 合成
         if tid in CRAFT_ACTIONS:
             return self._craft_action(tid, map_payload, summary)
@@ -1646,7 +1858,7 @@ class SkillChainExecutor:
             # mob 挡路（临时）：忽略怪可达则等待怪移动/消失，避免误判无目标
             blind = find_nearest_target(map2d, pos, list(target_types))
             if blind is not None:
-                return self._wait_action(summary)
+                return self._wait_action(summary, map_payload)
             return None
         _, first_delta = result
         if first_delta in DELTA_TO_ACTION:
@@ -1923,7 +2135,7 @@ class SkillChainExecutor:
             if a is not None:
                 return a
             if food < 5:
-                return self._wait_action(summary)  # 等被动怪刷新补充食物
+                return self._wait_action(summary, map_payload)  # 等被动怪刷新补充食物
 
         # 血线门（下楼前）：链上还要"穿过"下一层 → 到那层就得清 8 怪，
         # 而深层没有水/被动怪可依赖，恢复要折返。因此在**当前层（已清、相对安全）**
@@ -1995,27 +2207,50 @@ class SkillChainExecutor:
             craft = self._craft_action("native.craft_wood_sword", map_payload, summary)
             if craft is not None:
                 return craft
+        # 木镐排在最前：石头是石剑/石镐/箭/熔炉的共同原料，没有木镐一样都做不出。
+        if deep_need and pickaxe_level < 1:
+            craft = self._craft_action("native.craft_wood_pickaxe", map_payload, summary)
+            if craft is not None:
+                return craft
+
+        # 剑阶梯（先于镐阶梯）：剑直接降低下一层的清怪受击，是**当下**的生存收益；
+        # 镐是**后续**采矿链的前置。两者同价（1 木 + 1 石），故先剑后镐。
         sword_target = 0 if has_bow else (3 if deep_need else 0)
         if has_bow and prep is not None:
             sword_target = prep.sword_target
-        if deep_need and (sword_target > sword_level or not has_bow):
-            need_sword = sword_target > sword_level
-            if pickaxe_level < 1:  # 木镐是采石的前置（石剑/石镐/箭都要石头）
-                craft = self._craft_action("native.craft_wood_pickaxe", map_payload, summary)
-                if craft is not None:
-                    return craft
-            if need_sword and sword_level < 2:
+        if deep_need and sword_target > sword_level:
+            if sword_level < 2:
                 craft = self._craft_action("native.craft_stone_sword", map_payload, summary)
                 if craft is not None:
                     return craft
-            if pickaxe_level < 2 and (sword_target >= 3 or not has_bow):
-                craft = self._craft_action("native.craft_stone_pickaxe", map_payload, summary)
+            # 铁剑：本层能凑齐铁+煤则做（兽人 2 击杀，单怪受击与弓等效）；否则放弃。
+            if (sword_level < 3 and sword_target >= 3
+                    and self._iron_craft_feasible(map_payload, summary)):
+                craft = self._craft_action("native.craft_iron_sword", map_payload, summary)
                 if craft is not None:
                     return craft
-            # 铁剑：本层有铁则做（兽人 2 击杀，单怪受击与弓等效）；无铁放弃。
-            has_iron_here = self._count_blocks(map_payload["map"], [IRON]) > 0
-            if need_sword and sword_level < 3 and sword_target >= 3 and has_iron_here:
-                craft = self._craft_action("native.craft_iron_sword", map_payload, summary)
+
+        # 镐阶梯：与"备箭 vs 升剑"的择优**解耦**。镐不是武器，它决定能采到什么：
+        # 木镐→石头（石剑/箭/熔炉），石镐→铁（铁剑/铁甲/铁镐），铁镐→钻石。
+        # 旧实现把石镐挂在 `sword_target >= 3 or not has_bow` 下，而择优通常给
+        # sword_target=2 → 木镐锁死 → 永远采不到铁 → 铁剑/铁甲/钻石整条链断掉
+        # （实测 8/8 局死亡时 pickaxe 恒为 1）。这里按链上最深层需求逐级升。
+        pickaxe_target = 1 if self._max_floor >= 1 else 0
+        if deep_need:
+            pickaxe_target = 2          # 石镐 = 采铁的前置
+        if self._max_floor >= 4:
+            pickaxe_target = 3          # 铁镐 = 采钻石的前置
+        if pickaxe_target > pickaxe_level:
+            next_pickaxe = {
+                1: "native.craft_wood_pickaxe",
+                2: "native.craft_stone_pickaxe",
+                3: "native.craft_iron_pickaxe",
+            }[min(pickaxe_level + 1, 3)]
+            # 逐级升（做上一级镐才能采下一级的料）；铁镐需要铁+煤+熔炉，
+            # 本层凑不齐就不为它停留（软门槛，双轨制兜底）。
+            if (next_pickaxe != "native.craft_iron_pickaxe"
+                    or self._iron_craft_feasible(map_payload, summary)):
+                craft = self._craft_action(next_pickaxe, map_payload, summary)
                 if craft is not None:
                     return craft
 
@@ -2245,6 +2480,11 @@ class SkillChainExecutor:
     # -- 弓战斗：远程点射（L1 首箱弓，0-1 受击清怪的核心武器）---------------
 
     ARROW_BUDGET_CAP = 30  # 备箭上限（再多也带不动，且备箭本身要采料）
+    # 试过、被实测否掉的改动（勿重复）：把"下楼前值得专程采料"的门槛从
+    # arrows_min（清满 8 只的预算）降到"一个批次"（10 支），理由是批量清怪 +
+    # 锚点恢复本来就是分批的。16 局成对 A/B：死亡 8→7、成就 18.6→18.8、
+    # L1 击杀 12→12，但**唯一一次通关（seed 2027 到 L2）没了**（done→timeout）。
+    # 净收益为负，已回退。
     ARROW_FEEDSTOCK_CAP = 8  # 带下楼的木料上限（每 1 木 = 2 箭；+2 供深层放工作台）
 
     def _gear_for(self, floor: int, summary: Dict[str, Any]) -> Gear:
@@ -2409,16 +2649,20 @@ class SkillChainExecutor:
         map_payload: Dict[str, Any],
         summary: Dict[str, Any],
         chase: str = "all",
+        max_range: int = 14,
     ) -> Optional[int]:
-        """弓战斗原语：贴脸点射（必中）→ 同行列直线射（<=14，提前射杀免接战）
+        """弓战斗原语：贴脸点射（必中）→ 同行列直线射（<=max_range，提前射杀免接战）
         → 按 chase 模式走近目标点射。
 
         返回动作；无弓/无目标/无法射时返回 None（调用方回退近战/等待）。
         chase 模式：
         - "all"：追近战与远程（清怪子目标用）；
         - "ranged"：只追**远程**怪（生存维护用）——远程怪会隔空射击，干等只是
-          白挨打；近战怪会自己走过来，不必迎上去（迎上去=多挨首击）；
+          白挨打；近战怪会自己走过来，不必迎上去（迎上去=多挨首击）。
         - "none"：只点射不移动。
+        max_range：直线射击的最远距离。清怪层用 14（出生环 10-13，远距射杀=0 受击），
+        已清层用 CLEARED_FLOOR_ENGAGE_DIST——那里杀怪买不到任何东西，无差别点射会
+        把整局变成"地表箭工厂"（实测 L0 击杀 29、箭耗尽、一次没下楼）。
         """
         if isinstance(chase, bool):  # 兼容旧调用
             chase = "all" if chase else "none"
@@ -2465,13 +2709,19 @@ class SkillChainExecutor:
             # 同行/列且直线无阻挡且距离 <= 14：直线射（怪 75% 概率迎面走来）。
             # 怪在 10-13 出生，提前在远距射杀可免接战（0 受击）——这是弓清怪
             # 的核心价值，也是 L0 制备墙的突破口。
-            if (dx == 0 or dy == 0) and dist <= 14 and self._line_clear(map2d, pos, c):
-                action = DELTA_TO_ACTION.get((dx, dy))
+            # 注意：DELTA_TO_ACTION 只有 4 个**单位**向量键，(dx, dy) 在 dist>1 时
+            # 恒不命中——旧实现写 DELTA_TO_ACTION.get((dx, dy)) 使整段直线射击成为
+            # 死代码：弓只在贴脸时才射，玩家带着十几支箭被 4-5 格外的远程怪点死
+            # （实测 L1 死因：每次掉血都发生在无近身怪时）。这里取**符号向量**。
+            if (dx == 0 or dy == 0) and dist <= max_range and self._line_clear(map2d, pos, c):
+                step = (0 if dx == 0 else (1 if dx > 0 else -1),
+                        0 if dy == 0 else (1 if dy > 0 else -1))
+                action = DELTA_TO_ACTION.get(step)
                 if action is None:
                     continue
                 if direction == action:
                     return SHOOT_ARROW
-                return action  # 转向
+                return action  # 转向（同行列，转向后仍对齐，下一拍即可射）
         # 无贴脸/直线目标：按 chase 模式走近（近战 5 格内、远程 8 格内）。
         if chase != "none" and hostiles:
             targets = [c for c in hostiles if chase == "all" or c in ranged_set]
@@ -2585,11 +2835,25 @@ class SkillChainExecutor:
                 self._tactic = recommend_tactic(floor, gear)
             self._tactic_floor = floor
 
+        # 坑位伏击（清怪层 + 已在三面墙的坑位 + 有弓）：**守住不追**。
+        # 怪 75% 概率朝玩家走、且只在 10-14 格环上刷新（spawn_mobs），所以"等"
+        # 一定等得到；而走出坑位追击等于把"只有一个开口"的优势还回去——每次接战
+        # 固定挨一次首击（怪刷新即冷却<=0），这正是 L1 清怪墙的成本来源。
+        # 坑位里只需盯住那一个开口：怪进开口=贴脸必中点射，或沿走廊直线提前射杀。
+        ambush = (int(map_payload.get("monsters_killed", 0)) < 8
+                  and self._has_bow(summary)
+                  and int((summary.get("inventory") or {}).get("arrows", 0)) >= 1
+                  and self._in_shelter(map_payload, summary))
+
         # 弓主战：先尝试远程点射；无箭/无目标时回退近战/等待
         if self._tactic == "bow":
-            bow_action = self._bow_combat(map_payload, summary)
+            bow_action = self._bow_combat(
+                map_payload, summary, chase="none" if ambush else "all"
+            )
             if bow_action is not None:
                 return bow_action
+            if ambush:
+                return self._wait_action(summary, map_payload)  # 守住开口，别走出去
 
         hostiles: List[Tuple[int, int]] = []
         passives: List[Tuple[int, int]] = []
@@ -2622,7 +2886,8 @@ class SkillChainExecutor:
         elif passives and (food < 4 or not clearing):
             candidates = passives
         else:
-            return self._wait_action(summary)  # 无目标：血足睡等刷怪，血低 DO（不睡）
+            # 无目标：等刷怪。清怪中先退进掩体再等（见 _cover_or_wait）
+            return self._cover_or_wait(map_payload, summary, clearing)
 
         # 远程怪必须追（远距离射击威胁，等它接近只会持续挨打）；
         # 近战怪 5 格内能走到则追，更远 → SLEEP 等其接近（追太远既慢又易被包抄）。
@@ -2657,16 +2922,72 @@ class SkillChainExecutor:
                     return walk
             if dist > chase_limit and c not in ranged_set:
                 break  # 超出近战追击距离：等近战怪接近
-        return self._wait_action(summary)
+        return self._cover_or_wait(map_payload, summary, clearing)
 
-    def _wait_action(self, summary: Dict[str, Any]) -> int:
-        """等待刷怪/无事可做：血足睡（省资源+回蓝回血），血低 DO（不睡，被动回血）。
+    def _cover_or_wait(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any], clearing: bool
+    ) -> int:
+        """清怪时的"等"：先退进掩体再等。
 
-        血 <8 时 SLEEP 会被怪 3.5x 打醒致死（L0 僵尸 3.5x=7，8 血才扛得住）。
+        怪 75% 概率朝玩家走、且只在 10-14 格环上刷新（spawn_mobs），所以"等怪
+        上门"本来就是有效战术；差别在于**在哪里等**。旷野里 4 个方向都可能被
+        贴脸、远程怪可自由射击；三面墙的坑位把同时接战数降到 1 并挡掉三面的箭。
         """
+        if clearing:
+            cover = self._take_cover(map_payload, summary)
+            if cover is not None:
+                return cover
+        return self._wait_action(summary, map_payload)
+
+    def _wait_action(
+        self, summary: Dict[str, Any],
+        map_payload: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """等待刷怪/无事可做：安全时睡（省资源+回蓝回血），否则原地待命。
+
+        两道门都必要：
+        - 血 <8 时 SLEEP 会被怪 3.5x 打醒致死（L0 僵尸 3.5x=7，8 血才扛得住）；
+        - **满血也不能在旷野睡**：实测 seed 2011 在夜里"血足→睡等刷怪"，僵尸走到
+          身边一击 10→3（2 伤 ×3.5），醒来后又被补刀，253 步暴毙。因此要么距怪
+          >=14（怪会消失），要么身处三面墙的坑位（只有一个开口）才睡。
+        "原地待命"默认是 DO，但传入 map_payload 时会避免拆掉自己的掩体
+        （见 _idle_action）。
+        """
+        if map_payload is None:  # 老调用点（无地图信息）：保持原语义
+            return DO if float(summary.get("health", 9.0)) < 8 else SLEEP
         if float(summary.get("health", 9.0)) < 8:
-            return DO
+            return self._idle_action(map_payload, summary)
+        sleep_safe = (self._nearest_hostile_dist(map_payload, summary) >= 14
+                      or self._in_shelter(map_payload, summary))
+        if not sleep_safe:
+            return self._idle_action(map_payload, summary)
         return SLEEP
+
+    def _idle_action(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> int:
+        """原地待命的动作：默认 DO，但**不能拆掉自己的掩体**。
+
+        DO 作用于朝向格。在坑位里朝向格通常正是墙（走进坑位时面朝里），DO 会把
+        它挖掉——掩体当场作废，玩家从"三面墙"变回"站在开阔地"，而且这发生在
+        每一次"低血原地回血"的等待里。此时改用 NOOP。
+        朝向水/泉时保留 DO（那是喝水，正是想要的行为）。
+        """
+        map2d = map_payload["map"]
+        pos = _norm_pos(summary.get("player_position", [0, 0]))
+        delta = ACTION_DELTA.get(int(summary.get("player_direction", 0)))
+        if delta is None:
+            return DO
+        facing = (pos[0] + delta[0], pos[1] + delta[1])
+        h, w = len(map2d), len(map2d[0])
+        if not (0 <= facing[0] < h and 0 <= facing[1] < w):
+            return DO
+        tile = int(map2d[facing[0]][facing[1]])
+        if blocked(tile) and tile not in DRINK_BLOCKS and self._cover_walls(
+            map_payload, summary
+        ) >= MIN_SHELTER_WALLS - 1:
+            return NOOP
+        return DO
 
     def _reachable_set(
         self, map2d, start: Tuple[int, int]
@@ -2762,9 +3083,9 @@ class SkillChainExecutor:
     def _cast_spell(
         self, map_payload: Dict[str, Any], summary: Dict[str, Any], tid: str
     ) -> Optional[int]:
-        """施法：需 mana>=2，否则睡觉回蓝（血低不睡）。"""
+        """施法：需 mana>=2，否则睡觉回蓝（血低/旷野不睡）。"""
         if float(summary.get("mana", 0)) < 2:
-            return self._wait_action(summary)
+            return self._wait_action(summary, map_payload)
         return CAST_ACTIONS[tid]
 
     def _fire_bow(
@@ -2824,9 +3145,9 @@ class SkillChainExecutor:
         floor = int(summary.get("floor", 0))
         if floor != target_floor:
             return self._move_to_floor(map_payload, summary, target_floor)
-        # 附魔需 9 mana（满值），睡觉回蓝最快（血低不睡）
+        # 附魔需 9 mana（满值），睡觉回蓝最快（血低/旷野不睡）
         if float(summary.get("mana", 0)) < 9:
-            return self._wait_action(summary)
+            return self._wait_action(summary, map_payload)
         map2d = map_payload["map"]
         pos = _norm_pos(summary.get("player_position", [0, 0]))
         direction = int(summary.get("player_direction", 0))
@@ -3081,6 +3402,22 @@ class SkillChainExecutor:
             return None
         return self._walk_to(map2d, pos, best)
 
+    def _iron_craft_feasible(
+        self, map_payload: Dict[str, Any], summary: Dict[str, Any]
+    ) -> bool:
+        """本层能否就地做铁装：铁与煤各 >=1（背包里有，或本层地图上有）。
+
+        旧实现只看铁（`has_iron_here`），但 MAKE_IRON_* 同时要 1 煤 + 熔炉——
+        只有铁没有煤时会一路走到合成键前才发现缺料。
+        """
+        inventory = summary.get("inventory") or {}
+        map2d = map_payload["map"]
+        iron_ok = (int(inventory.get("iron", 0)) >= 1
+                   or self._count_blocks(map2d, [IRON]) > 0)
+        coal_ok = (int(inventory.get("coal", 0)) >= 1
+                   or self._count_blocks(map2d, [COAL]) > 0)
+        return iron_ok and coal_ok
+
     def _craft_armour_until(
         self, map_payload: Dict[str, Any], summary: Dict[str, Any], pieces: int
     ) -> Optional[int]:
@@ -3113,6 +3450,19 @@ class SkillChainExecutor:
                     3: "native.craft_iron_sword",
                     4: "native.craft_diamond_sword",
                 }.get(int(val))
+                if craft_tid is not None:
+                    a = self._craft_action(craft_tid, map_payload, summary)
+                    if a is not None:
+                        return a
+            elif kind == "pickaxe":
+                # 逐级升镐：只做"下一级"，因为做上一级镐才能采到下一级的料。
+                have = int((summary.get("inventory") or {}).get("pickaxe", 0))
+                craft_tid = {
+                    1: "native.craft_wood_pickaxe",
+                    2: "native.craft_stone_pickaxe",
+                    3: "native.craft_iron_pickaxe",
+                    4: "native.craft_diamond_pickaxe",
+                }.get(min(have + 1, int(val)))
                 if craft_tid is not None:
                     a = self._craft_action(craft_tid, map_payload, summary)
                     if a is not None:

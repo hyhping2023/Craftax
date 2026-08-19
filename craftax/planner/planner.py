@@ -20,19 +20,22 @@ from craftax.planner.world import WorldFacts
 # ---------------------------------------------------------------------------
 # 每层最低就绪门槛（初始建议值；按慢速集成测试标定）
 #   sword:   最低剑等级（1木 2石 3铁 4钻）
+#   pickaxe: 最低镐等级（1木 2石 3铁 4钻）。镐不是武器，但它决定"能采到什么"：
+#            石镐是采铁的前置、铁镐是采钻石的前置。缺镐不会当场致死，却会让
+#            铁剑/铁甲/钻石整条链在几百步后无声地断掉，因此纳入就绪门。
 #   armour:  最低铁甲件数（每件 10% 物免）
 #   strength:最低力量（默认执行器力量优先，此值为"建议线"）
 #   elemental: L6/L7 需要对应元素能力
 # ---------------------------------------------------------------------------
 FLOOR_GEAR_REQ: Dict[int, Dict[str, Any]] = {
-    1: {"sword": 2, "strength": 2},                # orc 3dmg/7HP
-    2: {"sword": 3, "armour": 1, "strength": 2},   # gnome 4dmg/9HP
-    3: {"sword": 3, "armour": 1, "strength": 3},   # lizard 5dmg/11HP
-    4: {"sword": 3, "armour": 2, "strength": 3},   # knight 6dmg/12HP 50%物免
-    5: {"sword": 4, "armour": 2, "strength": 4},   # troll 8dmg/20HP 20%物免
-    6: {"sword": 3, "armour": 2, "strength": 4, "elemental": True},  # pigman
-    7: {"sword": 4, "armour": 2, "strength": 4, "elemental": True},  # ice troll
-    8: {"sword": 4, "armour": 4, "strength": 5},   # boss
+    1: {"sword": 2, "pickaxe": 1, "strength": 2},                # orc 3dmg/7HP
+    2: {"sword": 3, "pickaxe": 2, "armour": 1, "strength": 2},   # gnome 4dmg/9HP
+    3: {"sword": 3, "pickaxe": 2, "armour": 1, "strength": 3},   # lizard 5dmg/11HP
+    4: {"sword": 3, "pickaxe": 3, "armour": 2, "strength": 3},   # knight 6dmg/12HP 50%物免
+    5: {"sword": 4, "pickaxe": 3, "armour": 2, "strength": 4},   # troll 8dmg/20HP 20%物免
+    6: {"sword": 3, "pickaxe": 3, "armour": 2, "strength": 4, "elemental": True},  # pigman
+    7: {"sword": 4, "pickaxe": 3, "armour": 2, "strength": 4, "elemental": True},  # ice troll
+    8: {"sword": 4, "pickaxe": 3, "armour": 4, "strength": 5},   # boss
 }
 
 
@@ -96,6 +99,7 @@ def check_floor_readiness(
 
     返回 (ok, missing)。missing 元素为 (kind, value)：
     - ("sword", min_level)：剑等级不足；
+    - ("pickaxe", min_level)：镐等级不足（采矿链的前置，不被弓豁免）；
     - ("armour", pieces)：铁甲件数不足；
     - ("strength", min_str)：力量不足（软门槛，力量优先升级可自动满足）；
     - ("elemental", floor)：L6/L7 缺元素能力；
@@ -132,6 +136,10 @@ def check_floor_readiness(
 
     if req.get("sword", 0) > sword and not bow_covers_gear:
         missing.append(("sword", req["sword"]))
+    # 镐门槛不被弓豁免：弓解决的是"怎么打"，镐解决的是"能采到什么"，二者不可替代。
+    pickaxe = int(inventory.get("pickaxe", 0))
+    if req.get("pickaxe", 0) > pickaxe:
+        missing.append(("pickaxe", req["pickaxe"]))
     need_armour = req.get("armour", 0)
     if need_armour > armour and not bow_covers_gear:
         if _armour_reachable(world_facts, floor, need_armour - armour):

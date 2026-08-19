@@ -9,6 +9,7 @@ manifest 结构（写入 SHARD_MANIFEST_FILENAME，封存后不可变）：
   "task": {"task_id", "task_version", "task_hash"},
   "state_schema_hash": str,
   "frame_sample": {"step_rate_hz", "video_fps"},
+  "env_params": {"thirst_rate", "day_length", "god_mode", ...},   # EnvParams 快照
   "counts": {"num_episodes", "num_transitions", "num_states", "num_frames", "num_videos"},
   "arrays": {"state/map": {"dtype", "shape", "chunks"}, ...},
   "files": {"相对路径": {"size", "sha256"}, ...}
@@ -102,6 +103,7 @@ def build_shard_manifest(
     task_hash: str = "",
     state_schema_hash: str = "",
     frame_sample: Optional[Dict[str, Any]] = None,
+    env_params: Optional[Dict[str, Any]] = None,
     counts: Optional[Dict[str, int]] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
@@ -141,6 +143,8 @@ def build_shard_manifest(
         },
         "state_schema_hash": state_schema_hash,
         "frame_sample": frame_sample or {},
+        # 环境参数快照：动力学不同的数据不能混用（如 thirst_rate 0.25 vs 1.0）
+        "env_params": env_params or {},
         "counts": counts or {},
         "arrays": _inspect_zarr_arrays(shard_dir),
         "files": files,

@@ -61,11 +61,25 @@ def test_has_elemental():
 
 def test_check_floor_readiness_ok():
     s = _summary(
-        inventory={"sword": 2, "armour": [0, 0, 0, 0]},
+        inventory={"sword": 2, "pickaxe": 1, "armour": [0, 0, 0, 0]},
         strength=2,
     )
     ok, missing = check_floor_readiness(1, s)
     assert ok, missing
+
+
+def test_check_floor_readiness_pickaxe_gate():
+    """镐门槛：石镐是采铁的前置，缺镐不会当场致死，却让铁装链在几百步后无声断掉。
+    弓可以豁免剑/甲（远程清怪），但豁免不了镐——弓解决"怎么打"，镐解决"能采到什么"。"""
+    s = _summary(inventory={"sword": 3, "pickaxe": 1, "armour": [1, 0, 0, 0],
+                            "bow": 1, "arrows": 40},
+                 strength=3)
+    ok, missing = check_floor_readiness(2, s, arrows_restockable=True)
+    assert not ok
+    assert ("pickaxe", 2) in missing
+    s["inventory"]["pickaxe"] = 2
+    ok2, missing2 = check_floor_readiness(2, s, arrows_restockable=True)
+    assert not any(k == "pickaxe" for k, _ in missing2), missing2
 
 
 def test_check_floor_readiness_missing_sword_armour():
@@ -79,7 +93,7 @@ def test_check_floor_readiness_missing_sword_armour():
 
 def test_check_floor_readiness_elemental_gate():
     s = _summary(
-        inventory={"sword": 4, "armour": [1, 1, 1, 1]}, strength=5,
+        inventory={"sword": 4, "pickaxe": 3, "armour": [1, 1, 1, 1]}, strength=5,
     )
     ok, missing = check_floor_readiness(6, s)
     assert not ok
@@ -163,7 +177,8 @@ def test_readiness_reports_broken_ladder_chain():
 def test_readiness_drops_unsatisfiable_armour_requirement():
     """铁/煤在目标层及以上都不够 → 不再要求护甲（否则执行器为一件永远做不出
     的甲反复采矿）。资源够时仍然要求。"""
-    s = _summary(inventory={"sword": 3, "armour": [0, 0, 0, 0], "bow": 0}, strength=5)
+    s = _summary(inventory={"sword": 3, "pickaxe": 2, "armour": [0, 0, 0, 0], "bow": 0},
+                 strength=5)
     poor = _facts({0: (True, {"iron": 1, "coal": 1}), 1: (True, {}), 2: (True, {})})
     ok, missing = check_floor_readiness(2, s, poor)
     assert not any(k == "armour" for k, _ in missing)

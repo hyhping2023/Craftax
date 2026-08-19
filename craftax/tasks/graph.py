@@ -66,6 +66,7 @@ _CATEGORY_OVERRIDES: Dict[str, str] = {
     "native.conquer_dungeon_bosses": "combat",
     "native.conquer_mid_tier_foes": "combat",
     "native.build_home_base": "exploration",
+    "native.build_shelter": "exploration",
     "native.conquer_lower_realms": "exploration",
     "native.reach_mid_dungeon": "exploration",
 }

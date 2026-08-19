@@ -496,3 +496,60 @@ def test_recorder_resolves_task_via_registry(base_state, tmp_path):
     ok, errors = validate_shard(shard_dir)
     assert ok, errors
 
+
+
+# ---------------------------------------------------------------------------
+# 数据集自描述：环境参数写进 manifest
+# ---------------------------------------------------------------------------
+
+
+def test_manifest_records_env_params(tmp_path, base_state):
+    """shard manifest 必须带 env_params 快照。
+
+    没有它，一批数据里混着 thirst_rate=0.25 与 1.0 的 episode 是无法区分的：
+    transition 结构完全相同，动力学却不同 → 训练出来的 world model 学到的是
+    两套物理的平均值，而且事后无法筛分。
+    """
+    shard_dir = make_shard_dir(str(tmp_path), "run_ep", "prod", "att")
+    writer = ShardWriter(
+        shard_dir,
+        run_id="run_ep",
+        producer_id="prod",
+        attempt_id="att",
+        task_id="test.collect_wood",
+        task_version="1.0.0",
+        frame_sample=CFG,
+        env_params={"thirst_rate": 0.25, "day_length": 300, "god_mode": False},
+    )
+    trs = [make_record(base_state, "ep1", t, terminated=(t == 1)) for t in range(2)]
+    writer.add_episode(EpisodeData(
+        episode_id="ep1", session_id="s1", task_id="test.collect_wood",
+        task_version="1.0.0", seed=1,
+        states=[make_state(base_state, 0)] + [tr.state for tr in trs],
+        transitions=trs, frames=[], terminated=True, truncated=False, video_id="v1",
+    ))
+    manifest = writer.finalize()
+    assert manifest["env_params"]["thirst_rate"] == 0.25
+    assert manifest["env_params"]["day_length"] == 300
+    # 落盘后仍在（封存不可变）
+    with open(os.path.join(shard_dir, "shard_manifest.json")) as f:
+        assert json.load(f)["env_params"]["thirst_rate"] == 0.25
+
+
+def test_session_env_params_reach_recording_config():
+    """SessionActor 把实际生效的 EnvParams 快照放进 RecordingConfig.env_params，
+    录制器据此写 manifest。逐字段导出，新增参数会自动被记录。"""
+    from craftax.contracts import DEFAULT_THIRST_RATE
+    from craftax.craftax.craftax_state import EnvParams
+    from craftax.service.session_actor import env_params_to_dict
+
+    snapshot = env_params_to_dict(EnvParams(thirst_rate=0.25, god_mode=True))
+    assert snapshot["thirst_rate"] == 0.25
+    assert snapshot["god_mode"] is True
+    assert snapshot["day_length"] == 300
+    # 必须是 JSON 可序列化的（manifest 要落盘）
+    json.dumps(snapshot)
+    # 具身层默认值就是放缓后的口渴倍率
+    assert env_params_to_dict(EnvParams(thirst_rate=DEFAULT_THIRST_RATE))[
+        "thirst_rate"
+    ] == DEFAULT_THIRST_RATE

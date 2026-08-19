@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import threading
 import warnings
 from typing import Any, Dict, Optional, Tuple
@@ -20,6 +21,7 @@ import jax
 import numpy as np
 
 from craftax.contracts import (
+    DEFAULT_THIRST_RATE,
     ActionSpec,
     NullRecorder,
     RecordingConfig,
@@ -30,6 +32,33 @@ from craftax.contracts import (
     new_episode_id,
 )
 from craftax.service.frame_encoder import encode_png
+
+
+def env_params_to_dict(params: Any) -> Dict[str, Any]:
+    """EnvParams -> JSON 可序列化 dict，用于写进 shard manifest（数据集自描述）。
+
+    逐字段导出而不是白名单：以后往 EnvParams 里加参数（像本轮的 thirst_rate）
+    会自动被记录，不需要再改这里——漏记等于数据集失去可复现性。
+    """
+
+    def scalar(value: Any) -> Any:
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        item = getattr(value, "item", None)
+        if callable(item):
+            try:
+                return item()
+            except Exception:  # noqa: BLE001 - 非标量数组：退回字符串表示
+                pass
+        if isinstance(value, (list, tuple)):
+            return [scalar(v) for v in value]
+        return str(value)
+
+    out: Dict[str, Any] = {}
+    for f in dataclasses.fields(params):
+        out[f.name] = scalar(getattr(params, f.name))
+    return out
+
 
 # 动作枚举名（name）的权威来源。
 _ACTION_NAMES: Dict[int, str] = {}
@@ -259,6 +288,7 @@ class SessionActor:
         env: Optional[Any] = None,
         max_timesteps: Optional[int] = None,
         god_mode: bool = False,
+        thirst_rate: Optional[float] = None,
     ):
         self.session_id = session_id
         self.env_name = env_name
@@ -267,7 +297,6 @@ class SessionActor:
         self.task_version = task.version
 
         self._render_cfg = render
-        self._recording_cfg = recording
         self._is_pixels = env_name == "Craftax-Pixels-v1"
         self._block_pixel_size = self._resolve_block_pixel_size(render)
 
@@ -279,6 +308,19 @@ class SessionActor:
             self._params = self._params.replace(max_timesteps=int(max_timesteps))
         if god_mode:
             self._params = self._params.replace(god_mode=True)
+        # 口渴衰减：具身会话默认放缓（contracts.DEFAULT_THIRST_RATE），因为长程
+        # 任务在原版速率下会被"找水"挤占；显式传 1.0 可恢复原版。EnvParams 本身
+        # 的默认值不变，RL 基准不受影响。
+        self.thirst_rate = float(
+            DEFAULT_THIRST_RATE if thirst_rate is None else thirst_rate
+        )
+        self._params = self._params.replace(thirst_rate=self.thirst_rate)
+        # 环境参数快照写进录制配置 → shard manifest（数据集自描述）。没有它，
+        # 一批数据里混着 thirst_rate 0.25 与 1.0 的 episode 无法区分：transition
+        # 结构完全相同，动力学却不同。
+        self._recording_cfg = dataclasses.replace(
+            recording, env_params=env_params_to_dict(self._params)
+        )
 
         self._task_adapter = _resolve_task_adapter(task.task_id, task.version)
         self._hook = _GuardedHook(_make_recorder(recording))

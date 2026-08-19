@@ -19,7 +19,8 @@
     "native.reach_boss_floor": "root_goal",
     "native.reach_floor_3": "root_goal",
     "native.reach_floor_5": "root_goal",
-    "native.wake_up": "atomic"
+    "native.wake_up": "atomic",
+    "native.build_shelter": "composite"
   },
   "proposed_tasks": [
     {
@@ -103,6 +104,31 @@
         "native.place_torch"
       ],
       "rationale": "将分散的建造/放置类原子任务聚合成一个明确的'定居/建家'高层目标，作为主线探索之外的支线集合；每个子任务已有各自的采集/合成前置（collect_wood、craft_wood_pickaxe/collect_stone、craft_torch），组合后可作为后续远程探索的补给枢纽。"
+    },
+    {
+      "task_id": "native.build_shelter",
+      "instruction_en": "Build a shelter: mine stone and wall yourself into cover.",
+      "instruction_zh": "建造庇护所：采石并用石块把自己围进掩体。",
+      "objective": "采集石头并放置石块，形成可抵御怪物的掩体（COLLECT_STONE 与 PLACE_STONE 成就同时达成）。近战怪只在相邻格才能攻击、怪的箭矢会被实心方块挡下，因此三面是墙的坑位能把同时接战的怪从 4 只降到 1 只并挡掉三个方向的远程攻击。",
+      "success_predicate": {
+        "type": "and",
+        "predicates": [
+          {
+            "type": "achievement",
+            "name": "COLLECT_STONE"
+          },
+          {
+            "type": "achievement",
+            "name": "PLACE_STONE"
+          }
+        ]
+      },
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.collect_stone",
+        "native.place_stone"
+      ],
+      "rationale": "把“搭掩体防守”显式建成任务节点：它是生存与清怪的关键技能，但此前只散落在 place_stone 这一单步成就里，没有任何任务表达“采石→放石→形成掩体”这条因果链。依赖取木镐（采石前置）、collect_stone 与 place_stone，均为既有节点，不改动任何现有任务的谓词或依赖。"
     }
   ],
   "anomalies": [

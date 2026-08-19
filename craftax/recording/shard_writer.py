@@ -120,6 +120,7 @@ class ShardWriter:
         task_version: str = "",
         task_hash: str = "",
         frame_sample: FrameSampleConfig,
+        env_params: Optional[Dict[str, Any]] = None,
         gold_frames: bool = False,
         shard_max_transitions: Optional[int] = None,
         video_fps: Optional[int] = None,
@@ -133,6 +134,8 @@ class ShardWriter:
         self.task_version = task_version
         self.task_hash = task_hash
         self.frame_sample = frame_sample
+        # 环境参数快照 → manifest.env_params（数据集自描述；见 contracts.RecordingConfig）
+        self.env_params: Dict[str, Any] = dict(env_params or {})
         self.gold_frames = gold_frames
         self.shard_max_transitions = shard_max_transitions
         self.video_fps = int(video_fps or frame_sample.video_fps)
@@ -399,6 +402,7 @@ class ShardWriter:
             task_hash=task_hash,
             state_schema_hash=self._state_schema_hash,
             frame_sample=self.frame_sample.to_dict(),
+            env_params=self.env_params,
             counts={
                 "num_episodes": self._episode_index,
                 "num_transitions": self._num_transitions,

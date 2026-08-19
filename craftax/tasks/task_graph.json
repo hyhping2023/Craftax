@@ -1,7 +1,7 @@
 {
   "schema_version": "1",
-  "node_count": 92,
-  "edge_count": 175,
+  "node_count": 93,
+  "edge_count": 182,
   "ok": true,
   "categories": {
     "native": [
@@ -16,6 +16,7 @@
     ],
     "exploration": [
       "native.build_home_base",
+      "native.build_shelter",
       "native.conquer_lower_realms",
       "native.deep_explorer",
       "native.enter_dungeon",
@@ -156,6 +157,23 @@
       "topological_level": 6,
       "semantic_level": "composite"
     },
+    "native.build_shelter": {
+      "task_id": "native.build_shelter",
+      "version": "1.0.0",
+      "category": "exploration",
+      "success_type": "and",
+      "achievements": [
+        "COLLECT_STONE",
+        "PLACE_STONE"
+      ],
+      "dependencies": [
+        "native.craft_wood_pickaxe",
+        "native.collect_stone",
+        "native.place_stone"
+      ],
+      "topological_level": 5,
+      "semantic_level": "composite"
+    },
     "native.cast_fireball": {
       "task_id": "native.cast_fireball",
       "version": "1.0.0",
@@ -167,7 +185,7 @@
       "dependencies": [
         "native.learn_fireball"
       ],
-      "topological_level": 7,
+      "topological_level": 4,
       "semantic_level": "atomic"
     },
     "native.cast_iceball": {
@@ -181,7 +199,7 @@
       "dependencies": [
         "native.learn_iceball"
       ],
-      "topological_level": 8,
+      "topological_level": 5,
       "semantic_level": "atomic"
     },
     "native.clear_surface_threats": {
@@ -649,9 +667,10 @@
       ],
       "dependencies": [
         "native.collect_wood",
-        "native.place_table"
+        "native.place_table",
+        "native.craft_wood_pickaxe"
       ],
-      "topological_level": 2,
+      "topological_level": 3,
       "semantic_level": "composite"
     },
     "native.craft_torch": {
@@ -902,7 +921,7 @@
         "DEFEAT_ORC_MAGE"
       ],
       "dependencies": [
-        "native.enter_sewers",
+        "native.enter_dungeon",
         "native.craft_stone_sword"
       ],
       "topological_level": 5,
@@ -917,7 +936,7 @@
         "DEFEAT_ORC_SOLIDER"
       ],
       "dependencies": [
-        "native.enter_sewers",
+        "native.enter_dungeon",
         "native.craft_stone_sword"
       ],
       "topological_level": 5,
@@ -932,7 +951,6 @@
         "DEFEAT_SKELETON"
       ],
       "dependencies": [
-        "native.enter_dungeon",
         "native.craft_wood_sword"
       ],
       "topological_level": 3,
@@ -1137,8 +1155,8 @@
       ],
       "dependencies": [
         "native.craft_iron_armour",
-        "native.enter_fire_realm",
-        "native.enter_ice_realm"
+        "native.enter_sewers",
+        "native.open_chest"
       ],
       "topological_level": 7,
       "semantic_level": "atomic"
@@ -1153,10 +1171,10 @@
       ],
       "dependencies": [
         "native.craft_stone_sword",
-        "native.enter_fire_realm",
-        "native.enter_ice_realm"
+        "native.enter_sewers",
+        "native.open_chest"
       ],
-      "topological_level": 7,
+      "topological_level": 5,
       "semantic_level": "atomic"
     },
     "native.enter_dungeon": {
@@ -1180,7 +1198,8 @@
         "ENTER_FIRE_REALM"
       ],
       "dependencies": [
-        "native.enter_troll_mines"
+        "native.enter_troll_mines",
+        "native.learn_iceball"
       ],
       "topological_level": 5,
       "semantic_level": "atomic"
@@ -1222,7 +1241,8 @@
         "ENTER_ICE_REALM"
       ],
       "dependencies": [
-        "native.enter_fire_realm"
+        "native.enter_fire_realm",
+        "native.learn_fireball"
       ],
       "topological_level": 6,
       "semantic_level": "atomic"
@@ -1336,9 +1356,9 @@
       ],
       "dependencies": [
         "native.open_chest",
-        "native.enter_fire_realm"
+        "native.enter_sewers"
       ],
-      "topological_level": 6,
+      "topological_level": 3,
       "semantic_level": "atomic"
     },
     "native.learn_iceball": {
@@ -1351,9 +1371,9 @@
       ],
       "dependencies": [
         "native.open_chest",
-        "native.enter_ice_realm"
+        "native.enter_vault"
       ],
-      "topological_level": 7,
+      "topological_level": 4,
       "semantic_level": "atomic"
     },
     "native.master_crafter": {
@@ -1397,9 +1417,10 @@
         "PLACE_FURNACE"
       ],
       "dependencies": [
-        "native.craft_wood_pickaxe"
+        "native.craft_wood_pickaxe",
+        "native.collect_stone"
       ],
-      "topological_level": 3,
+      "topological_level": 4,
       "semantic_level": "atomic"
     },
     "native.place_plant": {
@@ -1425,9 +1446,10 @@
         "PLACE_STONE"
       ],
       "dependencies": [
-        "native.craft_wood_pickaxe"
+        "native.craft_wood_pickaxe",
+        "native.collect_stone"
       ],
-      "topological_level": 3,
+      "topological_level": 4,
       "semantic_level": "atomic"
     },
     "native.place_table": {
@@ -1546,7 +1568,7 @@
         "native.collect_wood",
         "native.craft_tools"
       ],
-      "topological_level": 3,
+      "topological_level": 4,
       "semantic_level": "composite"
     },
     "native.survival_sustenance": {
@@ -1594,6 +1616,7 @@
   "semantic_overrides": {
     "native.basic_combat_training": "composite",
     "native.build_home_base": "composite",
+    "native.build_shelter": "composite",
     "native.cast_fireball": "atomic",
     "native.cast_iceball": "atomic",
     "native.clear_surface_threats": "composite",
@@ -1687,34 +1710,19 @@
   },
   "advisory": [
     {
-      "task_id": "native.craft_tools",
-      "issue": "成功谓词要求任一镐成就，但 dependencies 未列出 native.craft_wood_pickaxe（只列 collect_wood/place_table）。",
-      "suggestion": "考虑补充依赖 native.craft_wood_pickaxe。"
-    },
-    {
-      "task_id": "native.place_furnace",
-      "issue": "放置熔炉需石头，但 dependencies 未含 native.collect_stone。",
-      "suggestion": "考虑补充依赖 native.collect_stone。"
-    },
-    {
-      "task_id": "native.place_stone",
-      "issue": "放置石头需先收集石头，但 dependencies 未含 native.collect_stone。",
-      "suggestion": "考虑补充依赖 native.collect_stone。"
-    },
-    {
       "task_id": "native.defeat_enemy",
       "issue": "成功谓词覆盖 15 种敌人，combat 模块单独任务覆盖 17 种（DEFEAT_KNIGHT/DEFEAT_ARCHER 未纳入）。",
-      "suggestion": "确认是否应把 KNIGHT/ARCHER 纳入 defeat_enemy。"
+      "suggestion": "确认是否应把 KNIGHT/ARCHER 纳入 defeat_enemy（改成功谓词=改任务语义，需版本化）。"
     },
     {
       "task_id": "native.explore_dungeon",
       "issue": "与 native.reach_boss_floor 语义重复（均为 level_ge 8）。",
-      "suggestion": "确认是否为有意保留的两个入口。"
+      "suggestion": "确认是否为有意保留的两个入口（两者都是公开 task_id，删除会破坏既有数据集）。"
     }
   ],
   "validation": {
-    "node_count": 92,
-    "edge_count": 175,
+    "node_count": 93,
+    "edge_count": 182,
     "ok": true,
     "dangling": [],
     "self_deps": [],
@@ -1727,7 +1735,7 @@
     "note": "语义层级为确定性基线；agent 提案通过 apply_semantic_levels 覆盖。",
     "agent": {
       "proposal_dir": "task_graph_agents/",
-      "accepted_proposals": 15,
+      "accepted_proposals": 16,
       "rejected": [
         {
           "category": "combat",
@@ -1757,6 +1765,11 @@
         {
           "category": "crafting",
           "task_id": "native.crafting_mastery",
+          "reason": "任务不在图中"
+        },
+        {
+          "category": "exploration",
+          "task_id": "native.build_shelter",
           "reason": "任务不在图中"
         }
       ],

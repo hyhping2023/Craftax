@@ -1826,7 +1826,7 @@ def update_mobs(rng, state, params, static_params):
     return state
 
 
-def update_player_intrinsics(state, action, static_params):
+def update_player_intrinsics(state, action, params, static_params):
     # Start sleeping?
     is_starting_sleep = jnp.logical_and(
         action == Action.SLEEP.value, state.player_energy < get_max_energy(state)
@@ -1884,7 +1884,14 @@ def update_player_intrinsics(state, action, static_params):
     )
 
     # Thirst
-    thirst_add = jax.lax.select(state.is_sleeping, 0.5, 1.0) * intrinsic_decay_coeff
+    # params.thirst_rate 是口渴衰减倍率（1.0 = 原版）。它乘在累加速率上，因此
+    # "每掉 1 点水的步数" = 21 / thirst_rate，线性可预期；planner 侧的投影
+    # （combat_model.project_sleep 等）用同一个倍率，两边不会脱节。
+    thirst_add = (
+        jax.lax.select(state.is_sleeping, 0.5, 1.0)
+        * intrinsic_decay_coeff
+        * params.thirst_rate
+    )
     new_thirst = state.player_thirst + thirst_add
     thirsted_drink = jnp.maximum(state.player_drink - 1 * not_boss, 0)
     new_drink = jax.lax.select(new_thirst > 20, thirsted_drink, state.player_drink)
@@ -3061,7 +3068,7 @@ def craftax_step(rng, state, action, params, static_params):
     state = update_plants(state, static_params)
 
     # Intrinsics
-    state = update_player_intrinsics(state, action, static_params)
+    state = update_player_intrinsics(state, action, params, static_params)
 
     # Cap inv
     state = clip_inventory_and_intrinsics(state, params)

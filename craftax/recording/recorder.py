@@ -176,7 +176,8 @@ class AsyncRecorder:
         return get_task_adapter(task_id, task_version)
 
     def _ensure_writer(
-        self, task_id: str, task_version: str, frame_sample, gold_frames: bool
+        self, task_id: str, task_version: str, frame_sample, gold_frames: bool,
+        env_params: Optional[Dict[str, Any]] = None,
     ) -> ShardWriter:
         if self._writer is None:
             shard_dir = make_shard_dir(
@@ -190,6 +191,7 @@ class AsyncRecorder:
                 task_id=task_id,
                 task_version=task_version,
                 frame_sample=frame_sample,
+                env_params=env_params,
                 gold_frames=gold_frames,
                 shard_max_transitions=self._shard_max_transitions,
                 video_fps=frame_sample.video_fps,
@@ -324,7 +326,8 @@ class AsyncRecorder:
             video_id=self._video_id_for(acc["episode_id"]),
         )
         writer = self._ensure_writer(
-            acc["task_id"], acc["task_version"], acc["config"].frame_sample, acc["config"].gold_frames
+            acc["task_id"], acc["task_version"], acc["config"].frame_sample,
+            acc["config"].gold_frames, acc["config"].env_params,
         )
         writer.add_episode(episode)
         self._episode_counter += 1

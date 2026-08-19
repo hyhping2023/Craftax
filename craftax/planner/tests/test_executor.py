@@ -10,6 +10,7 @@ import pytest
 
 jax = pytest.importorskip("jax")
 
+from craftax.contracts import DEFAULT_THIRST_RATE  # noqa: E402
 from craftax.craftax.craftax_state import EnvParams  # noqa: E402
 from craftax.craftax.constants import Achievement  # noqa: E402
 from craftax.craftax.envs.craftax_symbolic_env import (  # noqa: E402
@@ -64,6 +65,9 @@ def _summary(hs):
     inv = hs.inventory
     return {
         "floor": int(hs.player_level),
+        # timestep 是夜间策略的输入（light_level 由它推出）；服务端 summary 一直有
+        # 这个字段（session_actor），测试侧缺失会让夜间逻辑在 rollout 里静默失效。
+        "timestep": int(hs.timestep),
         "player_position": [int(x) for x in hs.player_position],
         "player_direction": int(hs.player_direction),
         "energy": float(hs.player_energy),
@@ -126,9 +130,13 @@ def _floor_map_payload(hs, floor: int) -> dict:
     }
 
 
-def run_task(task_id: str, seed: int = 2026, max_steps: int = 2000) -> dict:
+def run_task(task_id: str, seed: int = 2026, max_steps: int = 2000,
+             thirst_rate: float = DEFAULT_THIRST_RATE) -> dict:
     env = CraftaxSymbolicEnvNoAutoReset()
-    state = env.reset(jax.random.PRNGKey(seed), EnvParams())[1]
+    # 与具身会话一致的环境参数：口渴衰减放缓（contracts.DEFAULT_THIRST_RATE）。
+    # env 与 executor 必须用同一个 thirst_rate，否则执行器的睡眠/等待投影会脱节。
+    params = EnvParams(thirst_rate=thirst_rate)
+    state = env.reset(jax.random.PRNGKey(seed), params)[1]
     # seed 透传：执行器据此加载 WorldFacts（跨层矿石/梯子事实）；
     # floor_map_provider：任意层全图，让"该层到底有没有这种矿"成为已知量。
     holder: dict = {}
@@ -139,7 +147,8 @@ def run_task(task_id: str, seed: int = 2026, max_steps: int = 2000) -> dict:
             return None
         return _floor_map_payload(hs, floor)
 
-    executor = SkillChainExecutor(task_id, seed=seed, floor_map_provider=provider)
+    executor = SkillChainExecutor(task_id, seed=seed, thirst_rate=thirst_rate,
+                                  floor_map_provider=provider)
     if max_steps <= 0:
         max_steps = executor.estimate_steps()
     key_rng = jax.random.PRNGKey(seed + 1)
@@ -164,7 +173,7 @@ def run_task(task_id: str, seed: int = 2026, max_steps: int = 2000) -> dict:
             result["goal"] = executor._chain[executor._chain_idx] if executor._chain_idx < len(executor._chain) else None
             return result
         key_rng, k2 = jax.random.split(key_rng)
-        obs, state, reward, done, info = env.step(k2, state, action, EnvParams())
+        obs, state, reward, done, info = env.step(k2, state, action, params)
         if bool(np.asarray(done)) and not executor.is_done(_summary(_host(state))):
             # 玩家死亡（health<=0）或超时：episode 结束且任务未完成
             result["error"] = "died_or_truncated"
@@ -445,6 +454,7 @@ def _fake_payload(map2d=None, monsters_killed: int = 10, mobs=None,
 def _fake_summary(**over):
     summary = {
         "floor": 0,
+        "timestep": 0,          # 默认白天（light_level ≈ 0.8）
         "player_position": [24, 24],
         "player_direction": 4,
         "health": 9.0, "energy": 9.0, "food": 9.0, "drink": 9.0, "mana": 9.0,
@@ -730,3 +740,344 @@ def test_defeat_mob_locations_match_game_constants():
             assert max(entered) <= max(floors), (
                 f"{task_id}: 依赖图要求下到 L{max(entered)}，但怪在 L{floors}"
             )
+
+
+# ---------------------------------------------------------------------------
+# 掩体 / 庇护所 / 工具阶梯（2026-08-19）
+# ---------------------------------------------------------------------------
+
+
+def test_bow_shoots_along_line_beyond_point_blank():
+    """回归：直线射击分支曾恒不触发。
+
+    旧实现按 `DELTA_TO_ACTION.get((dx, dy))` 取朝向，而该表只有 4 个**单位**
+    向量键 → dist>1 时恒为 None 并 continue，于是弓只在贴脸时才射。实测后果是
+    带着 13-18 支箭被 4-5 格外的远程怪点死（每次掉血都发生在无近身怪时）。
+    """
+    from craftax.planner.executor import DOWN, SHOOT_ARROW
+
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    mobs = {
+        "melee": {"positions": [], "masks": []},
+        "ranged": {"positions": [[29, 24]], "masks": [True]},   # 同列，5 格外
+        "passive": {"positions": [], "masks": []},
+    }
+    payload = _fake_payload(map2d=map2d, mobs=mobs)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    # 已面向目标（direction=DOWN=4）→ 直接射
+    summ = _fake_summary(player_direction=DOWN, inventory={"bow": 1, "arrows": 5})
+    assert ex._bow_combat(payload, summ) == SHOOT_ARROW
+    # 朝向不对 → 先转向（旧实现在这里返回 None，弓完全不动）
+    summ_turned = _fake_summary(player_direction=1, inventory={"bow": 1, "arrows": 5})
+    assert ex._bow_combat(payload, summ_turned) == DOWN
+
+
+def test_bow_does_not_shoot_through_wall():
+    """直线上有 solid 方块 → 不浪费箭（投射物会撞墙消失）。"""
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    map2d[26, 24] = 4  # STONE 挡在玩家与怪之间
+    mobs = {
+        "melee": {"positions": [], "masks": []},
+        "ranged": {"positions": [[29, 24]], "masks": [True]},
+        "passive": {"positions": [], "masks": []},
+    }
+    payload = _fake_payload(map2d=map2d, mobs=mobs)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(player_direction=4, inventory={"bow": 1, "arrows": 5})
+    from craftax.planner.executor import SHOOT_ARROW
+
+    assert ex._bow_combat(payload, summ, chase="none") != SHOOT_ARROW
+
+
+def _pocket_map(size: int = 48):
+    """(24, 21) 处三面石墙的天然坑位，其余为草地。"""
+    map2d = np.full((size, size), 2, dtype=np.int32)
+    map2d[23, 21] = map2d[25, 21] = map2d[24, 20] = 4
+    return map2d
+
+
+def test_take_cover_walks_to_natural_pocket():
+    from craftax.planner.executor import LEFT
+
+    payload = _fake_payload(map2d=_pocket_map())
+    summ = _fake_summary(player_position=[24, 24])
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    assert ex._take_cover(payload, summ) == LEFT   # 朝坑位走
+    # 已在坑位里 → 不再移动
+    assert ex._take_cover(payload, _fake_summary(player_position=[24, 21])) is None
+
+
+def test_take_cover_digs_into_stone_when_no_pocket():
+    """旷野无坑位但有石堆 + 木镐 → 挖一格造坑位（DO 面向石头）。"""
+    from craftax.planner.executor import DO, DOWN
+
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    map2d[25:29, 22:26] = 4          # 石堆，玩家贴在它上边缘
+    payload = _fake_payload(map2d=map2d)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(player_position=[24, 24], player_direction=DOWN,
+                         inventory={"pickaxe": 1})
+    assert ex._take_cover(payload, summ) == DO
+    # 无镐则挖不动 → 不返回挖掘动作
+    no_pick = _fake_summary(player_position=[24, 24], player_direction=DOWN,
+                            inventory={"pickaxe": 0, "stone": 0})
+    assert ex._take_cover(payload, no_pick) is None
+
+
+def test_survival_takes_cover_under_ranged_pressure():
+    """掉血却无近身怪 = 被投射物命中 → 先进掩体（墙会把箭吃掉），
+    而不是继续在旷野推进（实测 L1 死因）。"""
+    from craftax.planner.executor import LEFT
+
+    payload = _fake_payload(map2d=_pocket_map())
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(player_position=[24, 24], health=9.0)
+    # 无压制时不触发掩体逻辑
+    assert ex._ranged_pressure() is False
+    ex._ranged_hit_step = ex._steps
+    assert ex._ranged_pressure() is True
+    assert ex._survival_action(payload, summ) == LEFT
+
+
+def test_ranged_pressure_ignores_starvation_damage():
+    """饥/渴掉血恒 1 点，不能被误判成远程压制（否则断补给时会去躲墙角等死）。"""
+    payload = _fake_payload()
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    ex._prev_health = 6.0
+    ex._next_action_inner(payload, _fake_summary(health=5.0, drink=0.0))
+    assert ex._ranged_pressure() is False
+    ex2 = SkillChainExecutor("native.enter_gnomish_mines")
+    ex2._prev_health = 9.0
+    ex2._next_action_inner(payload, _fake_summary(health=6.0))   # -3 = 兽人法师的箭
+    assert ex2._ranged_pressure() is True
+
+
+def test_sleeps_in_shelter_when_no_safe_distance():
+    """三面墙的坑位里可以睡：只剩一个开口，睡中最多被一只怪打醒。
+    旧规则要求"距怪 >=14 或血 >=8"，低血 + 甩不掉怪时永远睡不着（能量归零死锁）。"""
+    map2d = np.full((12, 12), 4, dtype=np.int32)     # 全是石头
+    for cell in ((5, 5), (5, 6), (5, 7)):            # 一条 3 格死胡同
+        map2d[cell] = 2
+    mobs = {
+        "melee": {"positions": [[5, 7]], "masks": [True]},
+        "ranged": {"positions": [], "masks": []},
+        "passive": {"positions": [], "masks": []},
+    }
+    payload = _fake_payload(map2d=map2d, mobs=mobs)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(player_position=[5, 5], health=5.0, energy=2.0,
+                         inventory={"bow": 0, "arrows": 0})
+    assert ex._in_shelter(payload, summ) is True
+    assert ex._survival_action(payload, summ) == SLEEP
+
+
+def test_night_hold_is_bounded_and_conditional():
+    """夜间驻守只在血/能量不满时进入，且有步数预算与冷却（否则天黑就躲会吃掉
+    一局约 30% 的步数）。"""
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    night = dict(timestep=210)          # light_level ≈ 0（见 calculate_light_level）
+    assert ex._is_night(_fake_summary(**night)) is True
+    assert ex._is_night(_fake_summary(timestep=0)) is False
+    # 满血满能量 → 不驻守
+    assert ex._night_hold_active(_fake_summary(**night)) is False
+    # 血不满 → 驻守，但用满预算后进入冷却
+    low = _fake_summary(health=6.0, **night)
+    assert ex._night_hold_active(low) is True
+    for _ in range(ex.NIGHT_HOLD_MAX_STEPS + 1):
+        ex._night_hold_active(low)
+    assert ex._night_hold_active(low) is False       # 冷却中
+    # 深层不做夜间驻守（地牢没有昼夜刷新差异）
+    ex2 = SkillChainExecutor("native.enter_gnomish_mines")
+    assert ex2._night_hold_active(_fake_summary(floor=2, health=6.0, **night)) is False
+
+
+def test_clearing_waits_inside_cover():
+    """清怪时"等刷怪"要在坑位里等：怪 75% 概率朝玩家走、只在 10-14 格环上刷新，
+    在旷野等 = 四面可能被贴脸且远程怪可自由射击。"""
+    from craftax.planner.executor import LEFT
+
+    payload = _fake_payload(map2d=_pocket_map(), monsters_killed=0)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(player_position=[24, 24], floor=1)
+    assert ex._cover_or_wait(payload, summ, clearing=True) == LEFT
+    # 已清层不需要驻守，回到原来的等待语义
+    assert ex._cover_or_wait(payload, summ, clearing=False) in (SLEEP, DO)
+
+
+def test_descend_prep_upgrades_pickaxe_even_with_bow():
+    """回归：石镐曾挂在 `sword_target >= 3 or not has_bow` 下，而弹药充足时
+    择优给 sword_target=0 → 木镐锁死 → 采不到铁 → 铁装链整条断掉
+    （实测 8/8 局死亡时 pickaxe 恒为 1）。"""
+    from craftax.planner.executor import CRAFT_TABLE_BLOCK, MAKE_STONE_PICKAXE
+
+    map2d = np.full((16, 16), 2, dtype=np.int32)
+    map2d[12, 12] = CRAFT_TABLE_BLOCK
+    payload = _fake_payload(map2d=map2d, ladder_down=(15, 15))
+    summ = _fake_summary(floor=0, strength=1, player_position=[12, 13],
+                         inventory={"sword": 2, "pickaxe": 1, "bow": 1,
+                                    "arrows": 23, "wood": 4, "stone": 4})
+    ex = SkillChainExecutor("native.enter_gnomish_mines")   # _max_floor=2 → 需石镐
+    assert ex._clear_prep(1, payload, summ).sword_target == 0   # 弹药已备齐
+    assert ex._descend_to(payload, summ, 2) == MAKE_STONE_PICKAXE
+
+
+def test_readiness_gate_resolves_pickaxe():
+    """就绪门给出 ("pickaxe", n) 时执行器逐级升镐（做上一级镐才能采下一级的料）。"""
+    from craftax.planner.executor import CRAFT_TABLE_BLOCK, MAKE_STONE_PICKAXE
+
+    map2d = np.full((16, 16), 2, dtype=np.int32)
+    map2d[12, 12] = CRAFT_TABLE_BLOCK
+    payload = _fake_payload(map2d=map2d)
+    summ = _fake_summary(player_position=[12, 13],
+                         inventory={"pickaxe": 1, "wood": 4, "stone": 4})
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    assert ex._resolve_gate([("pickaxe", 3)], payload, summ, 2) == MAKE_STONE_PICKAXE
+
+
+def test_bow_engagement_range_depends_on_whether_kills_count():
+    """已清层不做 14 格无差别点射：那里的击杀不计入任何门槛，而地表持续刷新，
+    无差别点射会把整局变成"地表箭工厂"（实测：L0 击杀 17→29、箭耗到 0、
+    一次没下楼、成就 18→17）。未清层则相反——每一杀都算下楼门槛，远距射杀
+    既推进目标又免接战。"""
+    from craftax.planner.executor import DOWN, SHOOT_ARROW
+
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    mobs = {
+        "melee": {"positions": [[34, 24]], "masks": [True]},   # 同列 10 格外
+        "ranged": {"positions": [], "masks": []},
+        "passive": {"positions": [], "masks": []},
+    }
+    summ = _fake_summary(player_direction=DOWN, inventory={"bow": 1, "arrows": 8})
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    # 已清层（L0 初始 monsters_killed=10）→ 10 格外的怪不值得花箭
+    cleared = _fake_payload(map2d=map2d, mobs=mobs, monsters_killed=10)
+    assert ex._survival_action(cleared, summ) != SHOOT_ARROW
+    # 未清层 → 远距射杀（这才是弓的价值）
+    uncleared = _fake_payload(map2d=map2d, mobs=mobs, monsters_killed=0)
+    assert ex._survival_action(uncleared, summ) == SHOOT_ARROW
+
+
+# ---------------------------------------------------------------------------
+# 口渴衰减倍率（EnvParams.thirst_rate）
+# ---------------------------------------------------------------------------
+
+
+def test_thirst_rate_slows_water_decay_in_env():
+    """thirst_rate 线性放缓掉水速度（原版 1.0 ≈ 21 步/点）。
+
+    这是长程任务能否完成的前提：原版速率下满水 9 点只够约 190 步，2000 步的
+    任务要被"去找水"打断十余次，实测死亡轨迹里"低血 + 缺水 + 夜间"最常见。
+    """
+    from craftax.craftax.constants import Action
+
+    def drink_after(steps: int, thirst_rate: float) -> float:
+        env = CraftaxSymbolicEnvNoAutoReset()
+        params = EnvParams(thirst_rate=thirst_rate)
+        state = env.reset(jax.random.PRNGKey(2026), params)[1]
+        key = jax.random.PRNGKey(7)
+        for _ in range(steps):
+            key, sub = jax.random.split(key)
+            _o, state, _r, _d, _i = env.step(sub, state, Action.NOOP.value, params)
+        return float(_host(state).player_drink)
+
+    vanilla = drink_after(120, 1.0)
+    slowed = drink_after(120, 0.25)
+    assert vanilla < 9.0                    # 原版 120 步已经掉了好几点
+    assert slowed > vanilla                 # 放缓后掉得更少
+    # 倍率是线性的：0.25 倍速下掉的点数应约为原版的 1/4（允许 ±1 的取整误差）
+    assert abs((9.0 - slowed) - (9.0 - vanilla) / 4) <= 1.0
+
+
+def test_executor_projections_follow_session_thirst_rate():
+    """执行器的睡眠投影必须用会话的 thirst_rate：否则把水调慢后仍按原版投影，
+    会拒绝本来安全的睡眠（"渴着睡"的保护变成"永远不睡"）。"""
+    ex_vanilla = SkillChainExecutor("native.enter_gnomish_mines", thirst_rate=1.0)
+    ex_slow = SkillChainExecutor("native.enter_gnomish_mines", thirst_rate=0.25)
+    # 能量 1 → 整段睡眠 (7-1)×11 = 66 步（dex1 的能量上限是 7）。原版睡眠掉水
+    # 42 步/点 → 66 步正好把仅剩的 1 点水耗干（醒来即进入掉血状态）→ 不睡；
+    # 0.25 倍速下 168 步/点 → 只掉 0.4 点，睡醒还有水 → 可以安全睡。
+    summ = _fake_summary(energy=1.0, health=7.0, drink=1.0, food=9.0)
+    assert ex_vanilla._sleep_is_safe(summ) is False
+    assert ex_slow._sleep_is_safe(summ) is True
+
+
+def test_never_sleeps_in_the_open_with_mobs_around():
+    """回归：满血也不能在旷野睡。实测 seed 2011 夜里"血足→睡等刷怪"，僵尸走近
+    一击 10→3（2 伤 ×3.5 睡眠倍率），253 步暴毙。要么距怪 >=14（怪会消失），
+    要么身处三面墙坑位，才允许 SLEEP。"""
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    mobs = {
+        "melee": {"positions": [[29, 24]], "masks": [True]},   # 5 格外，远小于 14
+        "ranged": {"positions": [], "masks": []},
+        "passive": {"positions": [], "masks": []},
+    }
+    payload = _fake_payload(map2d=map2d, mobs=mobs)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(health=9.0)
+    assert ex._wait_action(summ, payload) != SLEEP
+    # 怪很远（>=14）→ 可以睡
+    far = {**mobs, "melee": {"positions": [[44, 24]], "masks": [True]}}
+    assert ex._wait_action(summ, _fake_payload(map2d=map2d, mobs=far)) == SLEEP
+    # 坑位里即使怪在 5 格外也可以睡（只有一个开口）
+    pocket = _pocket_map()
+    assert ex._wait_action(
+        _fake_summary(health=9.0, player_position=[24, 21]),
+        _fake_payload(map2d=pocket, mobs=mobs),
+    ) == SLEEP
+
+
+def test_idle_does_not_mine_away_own_shelter():
+    """在坑位里"原地待命"不能用 DO——DO 作用于朝向格，而走进坑位时正面朝墙，
+    DO 会把墙挖掉，掩体当场作废。"""
+    from craftax.planner.executor import UP
+
+    pocket = _pocket_map()
+    payload = _fake_payload(map2d=pocket)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    # 站在坑位里、面朝石墙 (23,21) → NOOP
+    in_pocket = _fake_summary(player_position=[24, 21], player_direction=UP, health=5.0)
+    assert ex._idle_action(payload, in_pocket) == NOOP
+    # 旷野里朝向草地 → 仍然是 DO（等刷怪/被动回血的原语义）
+    open_field = _fake_summary(player_position=[24, 30], player_direction=UP, health=5.0)
+    assert ex._idle_action(payload, open_field) == DO
+
+
+def test_ambush_holds_the_pocket_instead_of_chasing():
+    """清怪层 + 坑位 + 有弓 → 守住开口不追击：怪 75% 概率自己走过来，
+    走出去追等于把"只有一个开口"的优势还回去（每次接战固定挨一次首击）。"""
+    pocket = _pocket_map()
+    # 怪在斜向：既不贴脸也不在直线上 —— 唯一的区别就是"追不追"
+    mobs = {
+        "melee": {"positions": [[21, 28]], "masks": [True]},
+        "ranged": {"positions": [], "masks": []},
+        "passive": {"positions": [], "masks": []},
+    }
+    payload = _fake_payload(map2d=pocket, mobs=mobs, monsters_killed=0)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    # 坑位里（距怪 10 格）：守住开口
+    summ = _fake_summary(player_position=[24, 21], floor=1,
+                         inventory={"bow": 1, "arrows": 5})
+    assert ex._combat_any(payload, summ) in (NOOP, DO, SLEEP)
+    # 旷野里且怪在追击距离内（5 格）：照常迎上去（返回移动动作）
+    summ_open = _fake_summary(player_position=[24, 30], floor=1,
+                              inventory={"bow": 1, "arrows": 5})
+    assert ex._combat_any(payload, summ_open) not in (NOOP, DO, SLEEP)
+
+
+def test_low_energy_does_not_gamble_on_open_field_sleep():
+    """能量将尽也不能在旷野睡：SLEEP 一按就锁到能量回满（60+ 步），14 格内的怪
+    一定会走到，3.5x 一击就是 7 伤（实测 seed 2011 满血 10→3 随即被补刀）。
+    宁可顶着低能量推进——能量归零只是每 16 步掉 1 血的慢性消耗，随时可自救。"""
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    mobs = {
+        "melee": {"positions": [[30, 24]], "masks": [True]},   # 6 格外：够得着
+        "ranged": {"positions": [], "masks": []},
+        "passive": {"positions": [], "masks": []},
+    }
+    payload = _fake_payload(map2d=map2d, mobs=mobs)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(energy=2.0, health=10.0, inventory={"bow": 0, "arrows": 0})
+    assert ex._survival_action(payload, summ) != SLEEP
+    # 同样能量、但怪在 14 格外（会消失）→ 照常睡
+    far = {**mobs, "melee": {"positions": [[44, 24]], "masks": [True]}}
+    assert ex._survival_action(_fake_payload(map2d=map2d, mobs=far), summ) == SLEEP

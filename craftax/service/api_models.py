@@ -91,6 +91,9 @@ class SessionCreateRequest(BaseModel):
     # 环境参数覆盖（测试 / 短 episode 用）；None 时使用默认 EnvParams。
     max_timesteps: Optional[int] = None
     god_mode: bool = False
+    # 口渴衰减倍率（1.0 = 原版；越小水掉得越慢）。None 时用具身层默认
+    # contracts.DEFAULT_THIRST_RATE——长程任务在原版速率下会被找水挤占。
+    thirst_rate: Optional[float] = None
 
 
 class StepRequest(BaseModel):

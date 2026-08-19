@@ -621,17 +621,21 @@ def project_sleep(
     food: float,
     strength: int = 1,
     dexterity: int = 1,
+    thirst_rate: float = 1.0,
 ) -> SleepProjection:
     """投影"现在睡下去"的结果（对应 update_player_intrinsics 的逐步累加）。
 
     要点：睡眠只解决能量，不解决口渴/饥饿；任一必需品归零时睡眠反而**掉血**
     （31 步/HP），且睡眠期间无法自救。执行器用它否掉"渴着睡"这类必死决策。
+
+    thirst_rate 对应 `EnvParams.thirst_rate`（1.0 = 原版）。两边必须用同一个值，
+    否则会话把水调慢后投影仍按原版算，执行器会拒绝本来安全的睡眠。
     """
     decay = energy_decay_factor(dexterity)
     mh = max_health(strength)
     steps = max(0.0, (max_energy(dexterity) - energy)) * SLEEP_ENERGY_STEPS_PER_POINT
     # 睡眠期间口渴/饥饿按半速累加
-    thirst_steps = THIRST_STEPS_PER_POINT / (SLEEP_INTRINSIC_DECAY * decay)
+    thirst_steps = THIRST_STEPS_PER_POINT / (SLEEP_INTRINSIC_DECAY * decay * thirst_rate)
     hunger_steps = HUNGER_STEPS_PER_POINT / (SLEEP_INTRINSIC_DECAY * decay)
     drink_end = max(0.0, drink - steps / thirst_steps)
     food_end = max(0.0, food - steps / hunger_steps)
@@ -659,16 +663,17 @@ def project_sleep(
 
 def projected_awake_health(
     steps: float, health: float, drink: float, food: float, energy: float,
-    strength: int = 1, dexterity: int = 1,
+    strength: int = 1, dexterity: int = 1, thirst_rate: float = 1.0,
 ) -> float:
     """投影"清醒原地待机 steps 步"后的血量。
 
     用于判定"原地等被动回血"是否真的在回血——缺水/缺食物时被动回血是负的
     （16 步/HP 掉血 vs 26 步/HP 回血），原地等待即死亡螺旋。
+    thirst_rate 语义同 project_sleep（对应 EnvParams.thirst_rate）。
     """
     decay = energy_decay_factor(dexterity)
     mh = max_health(strength)
-    thirst_steps = THIRST_STEPS_PER_POINT / decay
+    thirst_steps = THIRST_STEPS_PER_POINT / (decay * thirst_rate)
     hunger_steps = HUNGER_STEPS_PER_POINT / decay
     if drink > 0 and food > 0 and energy > 0:
         steps_to_empty = min(drink * thirst_steps, food * hunger_steps,
