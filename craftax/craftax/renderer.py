@@ -140,6 +140,8 @@ def render_craftax_symbolic(state: EnvState):
             jnp.sqrt(state.inventory.sapling) / 10.0,
             jnp.sqrt(state.inventory.torches) / 10.0,
             jnp.sqrt(state.inventory.arrows) / 10.0,
+            # 便携水是离开水源后仍可用的关键资源，必须进入 agent 观测。
+            jnp.sqrt(state.inventory.water) / 10.0,
             state.inventory.books / 2.0,
             state.inventory.pickaxe / 4.0,
             state.inventory.sword / 4.0,
@@ -1145,6 +1147,7 @@ def render_craftax_text(state: EnvState):
     text_obs += f"Sapling: {state.inventory.sapling}\n"
     text_obs += f"Torch: {state.inventory.torches}\n"
     text_obs += f"Arrow: {state.inventory.arrows}\n"
+    text_obs += f"Water: {state.inventory.water}\n"
     text_obs += f"Book: {state.inventory.books}\n"
 
     def level_to_material(level):

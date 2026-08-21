@@ -32,6 +32,8 @@ KEY_MAPPING = {
     pygame.K_6: Action.MAKE_STONE_SWORD,
     pygame.K_7: Action.MAKE_IRON_SWORD,
     pygame.K_8: Action.MAKE_DIAMOND_SWORD,
+    pygame.K_9: Action.FILL_WATER,
+    pygame.K_0: Action.DRINK_WATER,
     pygame.K_t: Action.PLACE_TABLE,
     pygame.K_TAB: Action.SLEEP,
     pygame.K_f: Action.PLACE_FURNACE,

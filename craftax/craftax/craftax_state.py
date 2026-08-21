@@ -18,6 +18,8 @@ class Inventory:
     sword: int
     bow: int
     arrows: int
+    # 便携饮水次数（在水源旁 FILL_WATER，离开水源后 DRINK_WATER）。
+    water: int
     armour: jnp.ndarray
     torches: int
     ruby: int
@@ -125,6 +127,9 @@ class EnvParams:
     # 打断十余次去找水，"找水"会挤掉任务本身。默认保持 1.0，基准/RL 训练不受影响；
     # 具身层在 SessionActor 侧按 contracts.DEFAULT_THIRST_RATE 覆盖。
     thirst_rate: float = 1.0
+
+    # 精力自然衰减倍率（1.0 = 原版）；具身长程会话由 contracts 覆盖为 0.25。
+    energy_rate: float = 1.0
 
     fractal_noise_angles: tuple[int, int, int, int] = (None, None, None, None)
 

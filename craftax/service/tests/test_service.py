@@ -98,6 +98,68 @@ def test_create_session_returns_revision_zero(client, session_ids):
     assert data["frame"]["width"] > 0 and data["frame"]["height"] > 0
 
 
+def test_map_window_exposes_absolute_coordinates(client, session_ids):
+    data = create_session(client, session_ids, seed=42, max_timesteps=20)
+    sid = data["session_id"]
+    response = client.get(f"/v1/sessions/{sid}/map", params={"window_size": 16})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert len(payload["map"]) == 16
+    assert len(payload["map"][0]) == 16
+    assert payload["window_size"] == 16
+    assert payload["chunk_size"] == 16
+    assert payload["world_mode"] == "streamed_chunk_v1"
+    assert payload["player_global_position"] == [
+        payload["map_origin"][0] + payload["player_position"][0],
+        payload["map_origin"][1] + payload["player_position"][1],
+    ]
+    wide = client.get(f"/v1/sessions/{sid}/map", params={"window_size": 80}).json()
+    assert len(wide["map"]) == 80
+    assert wide["player_global_position"] == [
+        wide["map_origin"][0] + wide["player_position"][0],
+        wide["map_origin"][1] + wide["player_position"][1],
+    ]
+    # 规划器可在当前范围不够时继续扩大请求，而不是被旧的 96 格上限截断。
+    expanded = client.get(f"/v1/sessions/{sid}/map", params={"window_size": 128}).json()
+    assert len(expanded["map"]) == 128
+    assert len(expanded["map"][0]) == 128
+    assert expanded["player_global_position"] == [
+        expanded["map_origin"][0] + expanded["player_position"][0],
+        expanded["map_origin"][1] + expanded["player_position"][1],
+    ]
+    assert len(payload["map_origin"]) == 2
+
+
+def test_edge_refresh_preserves_absolute_coordinates_and_blocks(client, session_ids):
+    """跨活动窗口后，重叠格仍指向同一绝对方块且原点随窗口同步。"""
+    import jax.numpy as jnp
+
+    data = create_session(client, session_ids, seed=42, max_timesteps=20)
+    sid = data["session_id"]
+    actor = client.app.state.manager.get(sid)
+    # 将玩家置于右边界；新 chunk 的边界格由生成契约保证为可通行 PATH。
+    with actor._lock:
+        actor._state = actor._state.replace(
+            player_position=jnp.asarray([24, 47], dtype=jnp.int32)
+        )
+    before = client.get(f"/v1/sessions/{sid}/map").json()
+    # 绝对坐标 (24, 40) 在换窗前为局部 (24, 40)，换窗后为 (24, 24)。
+    stable_block = before["map"][24][40]
+
+    moved = step(client, sid, 2)  # RIGHT
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["info"]["world_expanded"] is True
+
+    after = client.get(f"/v1/sessions/{sid}/map").json()
+    assert after["world_origin"] == [0, 16]
+    assert after["player_global_position"] == [24, 48]
+    assert after["player_global_position"] == [
+        after["map_origin"][0] + after["player_position"][0],
+        after["map_origin"][1] + after["player_position"][1],
+    ]
+    assert after["map"][24][24] == stable_block
+
+
 # ---------------------------------------------------------------------------
 # step 与 revision
 # ---------------------------------------------------------------------------

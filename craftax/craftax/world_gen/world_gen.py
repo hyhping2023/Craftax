@@ -23,6 +23,7 @@ def get_new_empty_inventory():
         sword=jnp.asarray(0, dtype=jnp.int32),
         bow=jnp.asarray(0, dtype=jnp.int32),
         arrows=jnp.asarray(0, dtype=jnp.int32),
+        water=jnp.asarray(0, dtype=jnp.int32),
         torches=jnp.asarray(0, dtype=jnp.int32),
         ruby=jnp.asarray(0, dtype=jnp.int32),
         sapphire=jnp.asarray(0, dtype=jnp.int32),
@@ -54,6 +55,7 @@ def get_new_full_inventory():
         sword=jnp.asarray(4, dtype=jnp.int32),
         bow=jnp.asarray(1, dtype=jnp.int32),
         arrows=jnp.asarray(99, dtype=jnp.int32),
+        water=jnp.asarray(MAX_WATER_CANTEENS, dtype=jnp.int32),
         torches=jnp.asarray(99, dtype=jnp.int32),
         ruby=jnp.asarray(99, dtype=jnp.int32),
         sapphire=jnp.asarray(99, dtype=jnp.int32),
@@ -358,9 +360,10 @@ def generate_dungeon(rng, static_params, config):
 
 
 def generate_smoothworld(rng, static_params, player_position, config, params):
-    player_proximity_map = get_distance_map(
-        player_position, static_params.map_size
-    ).astype(jnp.float32)
+    distance_from_spawn = get_distance_map(player_position, static_params.map_size).astype(
+        jnp.float32
+    )
+    player_proximity_map = distance_from_spawn
     player_proximity_map_water = (
         player_proximity_map / config.player_proximity_map_water_strength
     )
@@ -457,6 +460,65 @@ def generate_smoothworld(rng, static_params, player_position, config, params):
     tree = jnp.logical_and(tree, map == config.tree_requirement_block)
     map = jnp.where(tree, config.tree, map)
 
+    # Surface water pockets: the original fractal sea can leave the spawn area
+    # without a reachable drink source.  Add a guaranteed reachable water point
+    # plus sparse, clustered pockets on grass in a ring around the spawn.  They
+    # never overwrite paths, trees, ores, or the spawn tile, and only apply to
+    # the overworld config.
+    rng, _rng = jax.random.split(rng)
+    surface_level = config.player_spawn == BlockType.GRASS.value
+    spawn_ring = jnp.logical_and(
+        distance_from_spawn >= 4.0,
+        distance_from_spawn <= 18.0,
+    )
+
+    # Always reserve the best available grass tile in the ring.  This removes a
+    # tiny-probability but disastrous seed where the random pockets all miss the
+    # reachable area (and also makes small-map tests deterministic).
+    base_candidate = jnp.logical_and(
+        surface_level,
+        jnp.logical_and(spawn_ring, map == config.default_block),
+    )
+    # 优先选至少有一个草地邻格的位置，避免水点被树木孤立；若地形过于
+    # 拥挤则退回所有候选草地，仍保证不会覆盖既有结构。
+    open_neighbour = jsp.signal.convolve(
+        (map == config.default_block).astype(jnp.float32),
+        jnp.ones((3, 3), dtype=jnp.float32),
+        mode="same",
+    ) > 1
+    connected_candidate = jnp.logical_and(base_candidate, open_neighbour)
+    candidate = jax.lax.select(
+        jnp.any(connected_candidate), connected_candidate, base_candidate
+    )
+    candidate_score = jax.random.uniform(_rng, static_params.map_size)
+    flat_candidate = jnp.argmax(
+        jnp.where(candidate, candidate_score, jnp.asarray(-1.0, dtype=jnp.float32))
+    )
+    flat_indices = jnp.arange(static_params.map_size[0] * static_params.map_size[1])
+    guaranteed_water = jnp.logical_and(
+        candidate.reshape(-1),
+        flat_indices == flat_candidate,
+    ).reshape(static_params.map_size)
+    map = jnp.where(guaranteed_water, config.sea_block, map)
+
+    rng, _rng = jax.random.split(rng)
+    # A 2.5% seed rate gives several small ponds on a 48×48 surface while the
+    # ring/grass mask keeps the added water local and traversable.
+    water_seed = jax.random.uniform(_rng, static_params.map_size) > 0.975
+    water_seed = jnp.logical_and(
+        water_seed,
+        jnp.logical_and(surface_level, spawn_ring),
+    )
+    # Dilate rare seeds into tiny ponds, rather than independent noisy pixels.
+    water_cluster = jsp.signal.convolve(
+        water_seed.astype(jnp.float32), jnp.ones((3, 3), dtype=jnp.float32), mode="same"
+    ) > 0
+    extra_surface_water = jnp.logical_and(
+        water_cluster,
+        jnp.logical_and(map == config.default_block, spawn_ring),
+    )
+    map = jnp.where(extra_surface_water, config.sea_block, map)
+
     # Ores
     def _add_ore(carry, index):
         rng, map = carry
@@ -472,6 +534,40 @@ def generate_smoothworld(rng, static_params, player_position, config, params):
 
     rng, _rng = jax.random.split(rng)
     (_, map), _ = jax.lax.scan(_add_ore, (_rng, map), jnp.arange(5))
+
+    # Iron is a long-range progression resource, not a cosmetic random drop:
+    # one run may need iron for an iron pickaxe, sword and several armour pieces.
+    # The world arrays are intentionally fixed-shape JAX tensors (48x48), so
+    # there is no runtime chunk expansion to compensate for an unlucky seed.
+    # Keep generation deterministic while reserving a minimum number of stone
+    # cells for iron on every level whose config actually contains iron.
+    # Some themed realms keep an iron slot in the config but intentionally set
+    # its chance to zero (for example fire/ice).  Do not inject iron there.
+    iron_enabled = jnp.any(
+        (config.ores == BlockType.IRON.value) & (config.ore_chances > 0)
+    )
+    iron_target = jnp.asarray(12, dtype=jnp.int32)
+    iron_count = jnp.sum(map == BlockType.IRON.value, dtype=jnp.int32)
+    iron_missing = jnp.maximum(iron_target - iron_count, 0)
+    stone_candidates = map == BlockType.STONE.value
+    rng, _rng = jax.random.split(rng)
+    reserve_scores = jax.random.uniform(_rng, static_params.map_size)
+    flat_candidates = stone_candidates.reshape(-1)
+    flat_scores = jnp.where(
+        flat_candidates,
+        reserve_scores.reshape(-1),
+        jnp.asarray(-1.0, dtype=jnp.float32),
+    )
+    reserve_order = jnp.argsort(flat_scores)[::-1]
+    reserve_rank = jnp.zeros_like(reserve_order).at[reserve_order].set(
+        jnp.arange(reserve_order.shape[0], dtype=reserve_order.dtype)
+    )
+    reserve_mask = (
+        flat_candidates
+        & (reserve_rank < iron_missing)
+        & iron_enabled
+    ).reshape(static_params.map_size)
+    map = jnp.where(reserve_mask, BlockType.IRON.value, map)
 
     # Lava
     lava_map = jnp.logical_and(

@@ -74,6 +74,7 @@ class SessionManager:
             max_timesteps=req.max_timesteps,
             god_mode=req.god_mode,
             thirst_rate=req.thirst_rate,
+            energy_rate=req.energy_rate,
         )
         with self._lock:
             self._sessions[session_id] = actor

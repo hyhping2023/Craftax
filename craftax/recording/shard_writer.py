@@ -376,6 +376,7 @@ class ShardWriter:
             "task_id": tr.task_id,
             "task_version": tr.task_version,
             "event_tokens": json.dumps(tr.event_tokens, ensure_ascii=False),
+            "info": json.dumps(tr.info, ensure_ascii=False, default=str),
             "sim_time_ns": int(tr.sim_time_ns),
         }
 
@@ -419,9 +420,14 @@ class ShardWriter:
         import pyarrow as pa
         import pyarrow.parquet as pq
 
+        transition_columns = list(TRANSITIONS_PARQUET_COLUMNS)
+        # Keep the canonical schema backward compatible; world/chunk metadata
+        # is an optional extension emitted only by new streamed-world shards.
+        if any("info" in row for row in self._transition_rows):
+            transition_columns.append("info")
         for filename, columns, rows in (
             (EPISODES_PARQUET_FILENAME, EPISODES_PARQUET_COLUMNS, self._episode_rows),
-            (TRANSITIONS_PARQUET_FILENAME, TRANSITIONS_PARQUET_COLUMNS, self._transition_rows),
+            (TRANSITIONS_PARQUET_FILENAME, transition_columns, self._transition_rows),
             (FRAME_INDEX_PARQUET_FILENAME, FRAME_INDEX_COLUMNS, self._frame_rows),
         ):
             normalized = [{col: row.get(col) for col in columns} for row in rows]

@@ -1234,12 +1234,36 @@ def get_distance_map(position, static_params):
     return dist
 
 
-def update_player_intrinsics(state, action):
+def update_player_intrinsics(state, action, allow_sleep_start=True):
     # Start sleeping?
-    is_starting_sleep = jnp.logical_and(
-        action == Action.SLEEP.value, state.player_energy < 9
+    # Do not enter sleep while a hostile mob is adjacent; combat takes
+    # priority.  This is evaluated after the mob update so a mob moving next
+    # to the player in the same tick is covered as well.
+    player_position = state.player_position
+    zombie_adjacent = jnp.any(
+        jnp.logical_and(
+            state.zombies.mask,
+            jnp.sum(jnp.abs(state.zombies.position - player_position), axis=-1) == 1,
+        )
     )
-    new_is_sleeping = jnp.logical_or(state.is_sleeping, is_starting_sleep)
+    skeleton_adjacent = jnp.any(
+        jnp.logical_and(
+            state.skeletons.mask,
+            jnp.sum(jnp.abs(state.skeletons.position - player_position), axis=-1) == 1,
+        )
+    )
+    hostile_adjacent = jnp.logical_or(zombie_adjacent, skeleton_adjacent)
+    is_starting_sleep = jnp.logical_and(
+        action == Action.SLEEP.value,
+        jnp.logical_and(
+            allow_sleep_start,
+            jnp.logical_and(state.player_energy < 9, jnp.logical_not(hostile_adjacent)),
+        ),
+    )
+    new_is_sleeping = jnp.logical_and(
+        jnp.logical_or(state.is_sleeping, is_starting_sleep),
+        jnp.logical_not(hostile_adjacent),
+    )
     state = state.replace(is_sleeping=new_is_sleeping)
 
     # Wake up?
@@ -1656,6 +1680,12 @@ def craftax_step(rng, state, action, params, static_params):
     init_achievements = state.achievements
     init_health = state.player_health
 
+    # Preserve the player's requested action for sleep transitions.  While
+    # sleeping, gameplay uses NOOP, but the original action is still the
+    # authoritative input for whether this tick requested sleep.
+    requested_action = action
+    allow_sleep_start = jnp.logical_not(state.is_sleeping)
+
     # Interrupt action if sleeping
     action = jax.lax.select(state.is_sleeping, Action.NOOP.value, action)
 
@@ -1683,7 +1713,7 @@ def craftax_step(rng, state, action, params, static_params):
     state = update_plants(state, static_params)
 
     # Intrinsics
-    state = update_player_intrinsics(state, action)
+    state = update_player_intrinsics(state, requested_action, allow_sleep_start)
 
     # Cap inv
     state = cap_inventory(state)

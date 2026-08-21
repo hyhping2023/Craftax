@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 from PIL import Image
 
+from craftax.contracts import MAX_WATER_CANTEENS, WATER_DRINK_AMOUNT
 from craftax.craftax.util.maths_utils import get_distance_map
 from craftax.environment_base.util import load_compressed_pickle, save_compressed_pickle
 
@@ -22,7 +23,6 @@ INVENTORY_OBS_HEIGHT = 4
 TEXTURE_CACHE_FILE = os.path.join(
     pathlib.Path(__file__).parent.resolve(), "assets", "texture_cache.pbz2"
 )
-
 
 # ENUMS
 class BlockType(Enum):
@@ -117,6 +117,8 @@ class Action(Enum):
     LEVEL_UP_STRENGTH = 40  # -
     LEVEL_UP_INTELLIGENCE = 41  # =
     ENCHANT_BOW = 42  # ;
+    FILL_WATER = 43  # 在水源旁装水
+    DRINK_WATER = 44  # 饮用随身携带的水
 
 
 class MobType(Enum):

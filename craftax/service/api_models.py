@@ -94,6 +94,8 @@ class SessionCreateRequest(BaseModel):
     # 口渴衰减倍率（1.0 = 原版；越小水掉得越慢）。None 时用具身层默认
     # contracts.DEFAULT_THIRST_RATE——长程任务在原版速率下会被找水挤占。
     thirst_rate: Optional[float] = None
+    # 精力自然衰减倍率；None 时使用具身层 DEFAULT_ENERGY_RATE。
+    energy_rate: Optional[float] = None
 
 
 class StepRequest(BaseModel):

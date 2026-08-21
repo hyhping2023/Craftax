@@ -172,6 +172,25 @@ def do_action(rng, state, action, static_params):
     state, did_attack_mob, did_kill_mob = attack_mob(
         state, block_position, get_player_damage_vector(state), True
     )
+    # 持剑时允许攻击正前方两格的敌人，保留一格范围内的原有攻击和挖掘
+    # 语义；第二格只做战斗判定，不会影响方块交互。
+    #
+    # 必须要求中间那一格通透（视线）：attack_mob 只按**位置精确相等**匹配怪，
+    # 不看地形，所以没有这道门时剑会穿墙/穿树命中——在地牢里等于隔墙单方面
+    # 打怪（怪的近战判定要求相邻），是个白给的无敌位。
+    sword_reach_position = state.player_position + 2 * DIRECTIONS[state.player_direction]
+    reach_is_clear = jnp.logical_and(
+        in_bounds(state, block_position),
+        jnp.logical_not(is_in_solid_block(state, block_position)),
+    )
+    state, did_attack_mob_far, did_kill_mob_far = jax.lax.cond(
+        jnp.logical_and(state.inventory.sword >= 1, reach_is_clear),
+        lambda s: attack_mob(s, sword_reach_position, get_player_damage_vector(s), True),
+        lambda s: (s, jnp.array(False), jnp.array(False)),
+        state,
+    )
+    did_attack_mob = jnp.logical_or(did_attack_mob, did_attack_mob_far)
+    did_kill_mob = jnp.logical_or(did_kill_mob, did_kill_mob_far)
 
     # BLOCKS
     # Tree
@@ -353,21 +372,53 @@ def do_action(rng, state, action, static_params):
     )
 
     # Water
-    is_drinking_water = jnp.logical_or(
+    is_water_source = jnp.logical_or(
         state.map[state.player_level][block_position[0], block_position[1]]
         == BlockType.WATER.value,
         state.map[state.player_level][block_position[0], block_position[1]]
         == BlockType.FOUNTAIN.value,
+    )
+    is_drinking_water = jnp.logical_and(
+        action == Action.DO.value, is_water_source
+    )
+    is_filling_water = jnp.logical_and(
+        action == Action.FILL_WATER.value,
+        jnp.logical_and(is_water_source, state.inventory.water < MAX_WATER_CANTEENS),
+    )
+    # 满水时不要白白消耗一瓶；执行器通常会在低于阈值时调用，但动作本身
+    # 也应保持幂等，避免策略抖动或手动控制误扣库存。
+    is_drinking_carried_water = jnp.logical_and(
+        action == Action.DRINK_WATER.value,
+        jnp.logical_and(
+            state.inventory.water > 0,
+            state.player_drink < get_max_drink(state),
+        ),
     )
     new_drink = jax.lax.select(
         is_drinking_water,
         jnp.minimum(get_max_drink(state), state.player_drink + 1),
         state.player_drink,
     )
-    new_thirst = jax.lax.select(is_drinking_water, 0.0, state.player_thirst)
+    new_drink = jax.lax.select(
+        is_drinking_carried_water,
+        jnp.minimum(get_max_drink(state), new_drink + WATER_DRINK_AMOUNT),
+        new_drink,
+    )
+    new_thirst = jax.lax.select(
+        jnp.logical_or(is_drinking_water, is_drinking_carried_water),
+        0.0,
+        state.player_thirst,
+    )
+    new_inventory = new_inventory.replace(
+        water=jnp.minimum(
+            MAX_WATER_CANTEENS,
+            new_inventory.water + is_filling_water - is_drinking_carried_water,
+        )
+    )
     new_achievements = state.achievements.at[Achievement.COLLECT_DRINK.value].set(
         jnp.logical_or(
-            state.achievements[Achievement.COLLECT_DRINK.value], is_drinking_water
+            state.achievements[Achievement.COLLECT_DRINK.value],
+            jnp.logical_or(is_drinking_water, is_filling_water),
         )
     )
 
@@ -468,6 +519,10 @@ def do_action(rng, state, action, static_params):
     action_block_in_bounds = jnp.logical_and(
         action_block_in_bounds, jnp.logical_not(did_attack_mob)
     )
+    # 携带水是无目标动作，不应因玩家站在地图边缘而被“目标格越界”回滚。
+    action_block_in_bounds = jnp.logical_or(
+        action_block_in_bounds, action == Action.DRINK_WATER.value
+    )
     new_map = jax.lax.select(
         action_block_in_bounds, new_map, state.map[state.player_level]
     )
@@ -506,10 +561,16 @@ def do_action(rng, state, action, static_params):
         boss_timesteps_to_spawn_this_round=new_boss_timesteps_to_spawn_this_round,
     )
 
-    # Do?
-    doing_mining = action == Action.DO.value
+    # 交互动作：DO 之外，便携水的装水/饮水也需要提交 do_action 的状态更新。
+    doing_interaction = jnp.logical_or(
+        action == Action.DO.value,
+        jnp.logical_or(
+            action == Action.FILL_WATER.value,
+            action == Action.DRINK_WATER.value,
+        ),
+    )
     state = jax.tree_util.tree_map(
-        lambda x, y: jax.lax.select(doing_mining, x, y),
+        lambda x, y: jax.lax.select(doing_interaction, x, y),
         state,
         old_state,
     )
@@ -1185,6 +1246,18 @@ def update_mobs(rng, state, params, static_params):
             melee_mobs.position[state.player_level, melee_mob_index],
             proposed_position,
         )
+        # 僵尸（type_id=0）移动速度为玩家的一半：每两个环境 tick 才移动
+        # 一格，但仍保留每 tick 的攻击判定和攻击冷却。
+        mob_type = melee_mobs.type_id[state.player_level, melee_mob_index]
+        zombie_can_move = jnp.logical_or(
+            mob_type != 0,
+            (state.timestep % 2) == 0,
+        )
+        proposed_position = jax.lax.select(
+            zombie_can_move,
+            proposed_position,
+            melee_mobs.position[state.player_level, melee_mob_index],
+        )
 
         melee_mob_base_damage = MOB_TYPE_DAMAGE_MAPPING[
             melee_mobs.type_id[state.player_level, melee_mob_index], MobType.MELEE.value
@@ -1217,7 +1290,6 @@ def update_mobs(rng, state, params, static_params):
             ),
         )
 
-        mob_type = melee_mobs.type_id[state.player_level, melee_mob_index]
         collision_map = MOB_TYPE_COLLISION_MAPPING[mob_type, 1]
         valid_move = is_position_in_bounds_not_in_mob_not_colliding(
             state, proposed_position, collision_map
@@ -1226,6 +1298,29 @@ def update_mobs(rng, state, params, static_params):
             valid_move,
             proposed_position,
             melee_mobs.position[state.player_level, melee_mob_index],
+        )
+
+        # 唤醒条件不能只依赖“本 tick 已造成伤害”：怪物可能刚在本 tick
+        # 走入相邻格，或仍处于攻击冷却。进入一格威胁范围就立即醒来，
+        # 下一步由规划器接管战斗；伤害和攻击冷却仍保持原有规则。
+        enters_melee_range = (
+            jnp.abs(position - state.player_position).sum() == 1
+        )
+        wakes_from_proximity = jnp.logical_and(
+            state.is_sleeping,
+            jnp.logical_and(
+                melee_mobs.mask[state.player_level, melee_mob_index],
+                enters_melee_range,
+            ),
+        )
+        state = state.replace(
+            is_sleeping=jnp.logical_and(state.is_sleeping, jnp.logical_not(wakes_from_proximity)),
+            achievements=state.achievements.at[Achievement.WAKE_UP.value].set(
+                jnp.logical_or(
+                    state.achievements[Achievement.WAKE_UP.value],
+                    wakes_from_proximity,
+                )
+            ),
         )
 
         should_not_despawn = (
@@ -1826,17 +1921,66 @@ def update_mobs(rng, state, params, static_params):
     return state
 
 
-def update_player_intrinsics(state, action, params, static_params):
+def update_player_intrinsics(
+    state, action, params, static_params, allow_sleep_start=True
+):
     # Start sleeping?
-    is_starting_sleep = jnp.logical_and(
-        action == Action.SLEEP.value, state.player_energy < get_max_energy(state)
+    # A hostile mob next to the player must be engaged first.  This check is
+    # intentionally performed after ``update_mobs`` (the caller's ordering),
+    # so a mob that moves into an adjacent tile during this tick also prevents
+    # sleep from starting.
+    player_position = state.player_position
+    melee_adjacent = jnp.any(
+        jnp.logical_and(
+            state.melee_mobs.mask[state.player_level],
+            jnp.sum(
+                jnp.abs(
+                    state.melee_mobs.position[state.player_level] - player_position
+                ),
+                axis=-1,
+            )
+            == 1,
+        )
     )
-    new_is_sleeping = jnp.logical_or(state.is_sleeping, is_starting_sleep)
+    ranged_adjacent = jnp.any(
+        jnp.logical_and(
+            state.ranged_mobs.mask[state.player_level],
+            jnp.sum(
+                jnp.abs(
+                    state.ranged_mobs.position[state.player_level] - player_position
+                ),
+                axis=-1,
+            )
+            == 1,
+        )
+    )
+    hostile_adjacent = jnp.logical_or(melee_adjacent, ranged_adjacent)
+    is_starting_sleep = jnp.logical_and(
+        action == Action.SLEEP.value,
+        jnp.logical_and(
+            allow_sleep_start,
+            jnp.logical_and(
+                jnp.logical_or(
+                    state.player_energy < get_max_energy(state),
+                    state.player_health < get_max_health(state),
+                ),
+                jnp.logical_not(hostile_adjacent),
+            ),
+        ),
+    )
+    new_is_sleeping = jnp.logical_and(
+        jnp.logical_or(state.is_sleeping, is_starting_sleep),
+        jnp.logical_not(hostile_adjacent),
+    )
     state = state.replace(is_sleeping=new_is_sleeping)
 
     # Wake up?
     is_waking_up = jnp.logical_and(
-        state.player_energy >= get_max_energy(state), state.is_sleeping
+        state.is_sleeping,
+        jnp.logical_and(
+            state.player_energy >= get_max_energy(state),
+            state.player_health >= get_max_health(state),
+        ),
     )
     new_is_sleeping = jnp.logical_and(state.is_sleeping, jnp.logical_not(is_waking_up))
     state = state.replace(
@@ -1903,10 +2047,12 @@ def update_player_intrinsics(state, action, params, static_params):
     )
 
     # Fatigue
+    # energy_rate 只影响清醒时的自然疲劳累积；睡眠仍按固定恢复速度回能量，
+    # 这样 SLEEP 可以作为安全状态下的快速回血/回能手段。
     new_fatigue = jax.lax.select(
         state.is_sleeping,
         jnp.minimum(state.player_fatigue - 1, 0),
-        state.player_fatigue + intrinsic_decay_coeff,
+        state.player_fatigue + intrinsic_decay_coeff * params.energy_rate,
     )
 
     new_energy = jax.lax.select(
@@ -3014,6 +3160,15 @@ def craftax_step(rng, state, action, params, static_params):
     init_achievements = state.achievements
     init_health = state.player_health
 
+    # Keep the player's requested action for intrinsic transitions.  The
+    # effective action is forced to NOOP while already sleeping so the player
+    # cannot act during sleep, but that rewrite must not erase the input that
+    # initiated sleep.
+    requested_action = action
+    allow_sleep_start = jnp.logical_and(
+        jnp.logical_not(state.is_sleeping), jnp.logical_not(state.is_resting)
+    )
+
     # Interrupt action if sleeping or resting
     action = jax.lax.select(state.is_sleeping, Action.NOOP.value, action)
     action = jax.lax.select(state.is_resting, Action.NOOP.value, action)
@@ -3068,7 +3223,9 @@ def craftax_step(rng, state, action, params, static_params):
     state = update_plants(state, static_params)
 
     # Intrinsics
-    state = update_player_intrinsics(state, action, params, static_params)
+    state = update_player_intrinsics(
+        state, requested_action, params, static_params, allow_sleep_start
+    )
 
     # Cap inv
     state = clip_inventory_and_intrinsics(state, params)

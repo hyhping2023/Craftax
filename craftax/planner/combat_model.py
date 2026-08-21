@@ -566,16 +566,20 @@ def recommend_clear_prep(
     )
 
 
-def energy_consumed(steps: float, dexterity: int) -> float:
-    """清醒 steps 步消耗的能量（每 ~31 步 1 点，随敏捷减缓）。"""
-    return steps / (ENERGY_STEPS_PER_POINT / energy_decay_factor(dexterity))
-def awake_budget_steps(dexterity: int) -> float:
+def energy_consumed(steps: float, dexterity: int, energy_rate: float = 1.0) -> float:
+    """清醒 steps 步消耗的能量（energy_rate=0.25 时为原版 1/4）。"""
+    return steps * energy_decay_factor(dexterity) * energy_rate / ENERGY_STEPS_PER_POINT
+
+
+def awake_budget_steps(dexterity: int, energy_rate: float = 1.0) -> float:
     """当前敏捷下"从满能量到耗尽"可支撑的清醒步数。
 
     能量上限 7+2*(dex-1)，每点能量消耗约 31/decay 步。
     dex1≈217、dex2≈318、dex3≈454、dex4≈621、dex5≈930 步。
     """
-    return max_energy(dexterity) * ENERGY_STEPS_PER_POINT / energy_decay_factor(dexterity)
+    return max_energy(dexterity) * ENERGY_STEPS_PER_POINT / (
+        energy_decay_factor(dexterity) * energy_rate
+    )
 
 
 def energy_is_bottleneck(
@@ -633,7 +637,12 @@ def project_sleep(
     """
     decay = energy_decay_factor(dexterity)
     mh = max_health(strength)
-    steps = max(0.0, (max_energy(dexterity) - energy)) * SLEEP_ENERGY_STEPS_PER_POINT
+    energy_steps = max(0.0, (max_energy(dexterity) - energy)) * SLEEP_ENERGY_STEPS_PER_POINT
+    # With the slower natural fatigue rate, energy may already be full while
+    # health is not.  The game keeps SLEEP locked until both are restored, so
+    # include the HP recovery time in the commitment horizon as well.
+    health_steps = max(0.0, (mh - health)) * SLEEP_REGEN_STEPS_PER_HP
+    steps = max(energy_steps, health_steps)
     # 睡眠期间口渴/饥饿按半速累加
     thirst_steps = THIRST_STEPS_PER_POINT / (SLEEP_INTRINSIC_DECAY * decay * thirst_rate)
     hunger_steps = HUNGER_STEPS_PER_POINT / (SLEEP_INTRINSIC_DECAY * decay)
@@ -664,6 +673,7 @@ def project_sleep(
 def projected_awake_health(
     steps: float, health: float, drink: float, food: float, energy: float,
     strength: int = 1, dexterity: int = 1, thirst_rate: float = 1.0,
+    energy_rate: float = 1.0,
 ) -> float:
     """投影"清醒原地待机 steps 步"后的血量。
 
@@ -677,7 +687,7 @@ def projected_awake_health(
     hunger_steps = HUNGER_STEPS_PER_POINT / decay
     if drink > 0 and food > 0 and energy > 0:
         steps_to_empty = min(drink * thirst_steps, food * hunger_steps,
-                             energy * ENERGY_STEPS_PER_POINT / decay)
+                             energy * ENERGY_STEPS_PER_POINT / (decay * energy_rate))
     else:
         steps_to_empty = 0.0
     ok_steps = min(steps, steps_to_empty)

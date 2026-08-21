@@ -27,7 +27,7 @@ if REPO_ROOT not in sys.path:
 
 import jax  # noqa: E402
 
-from craftax.contracts import DEFAULT_THIRST_RATE  # noqa: E402
+from craftax.contracts import DEFAULT_ENERGY_RATE, DEFAULT_THIRST_RATE  # noqa: E402
 from craftax.craftax.craftax_state import EnvParams  # noqa: E402
 from craftax.craftax.envs.craftax_symbolic_env import (  # noqa: E402
     CraftaxSymbolicEnvNoAutoReset,
@@ -75,10 +75,11 @@ def _adjacent_hostiles(payload, pos) -> int:
 
 
 def run(task_id: str, seed: int, max_steps: int = 2000,
-        thirst_rate: float = DEFAULT_THIRST_RATE) -> dict:
+        thirst_rate: float = DEFAULT_THIRST_RATE,
+        energy_rate: float = DEFAULT_ENERGY_RATE) -> dict:
     env = CraftaxSymbolicEnvNoAutoReset()
     # env 与 executor 必须共用同一个 thirst_rate（见 contracts.DEFAULT_THIRST_RATE）
-    params = EnvParams(thirst_rate=thirst_rate)
+    params = EnvParams(thirst_rate=thirst_rate, energy_rate=energy_rate)
     state = env.reset(jax.random.PRNGKey(seed), params)[1]
     holder: dict = {}
 
@@ -89,6 +90,7 @@ def run(task_id: str, seed: int, max_steps: int = 2000,
         return _floor_map_payload(hs, floor)
 
     ex = SkillChainExecutor(task_id, seed=seed, thirst_rate=thirst_rate,
+                            energy_rate=energy_rate,
                             floor_map_provider=provider)
     key = jax.random.PRNGKey(seed + 1)
     trace: list = []
@@ -157,6 +159,8 @@ def main() -> int:
     parser.add_argument("--steps", type=int, default=2000, help="每局步数预算")
     parser.add_argument("--thirst-rate", type=float, default=DEFAULT_THIRST_RATE,
                         help="口渴衰减倍率（1.0=原版，越小水掉得越慢）")
+    parser.add_argument("--energy-rate", type=float, default=DEFAULT_ENERGY_RATE,
+                        help="精力衰减倍率（1.0=原版，0.25=原版四分之一）")
     parser.add_argument("--out", default="/tmp/diag_rollout.json", help="JSON 输出路径")
     parser.add_argument(
         "--job", action="append", default=None,
@@ -172,7 +176,8 @@ def main() -> int:
 
     results = []
     for task, seed in jobs:
-        r = run(task, seed, max_steps=args.steps, thirst_rate=args.thirst_rate)
+        r = run(task, seed, max_steps=args.steps, thirst_rate=args.thirst_rate,
+                energy_rate=args.energy_rate)
         results.append(r)
         inv = r["inventory"]
         print(

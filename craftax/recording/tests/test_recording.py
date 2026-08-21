@@ -455,6 +455,41 @@ def test_recorder_flushes_partial_episode_on_close(base_state, tmp_path):
     assert rows[0]["truncated"] is True
 
 
+def test_recorder_streams_long_episode_in_bounded_segments(base_state, tmp_path):
+    """长程 session 连续运行，但录制器按段写盘而不累积整局状态。"""
+    cfg = RecordingConfig(spool_dir=str(tmp_path), frame_sample=CFG)
+    rec = AsyncRecorder(
+        recording_config=cfg,
+        run_id="r-stream",
+        producer_id="p-stream",
+        task_adapter=_FakeTask(),
+        segment_max_transitions=2,
+    )
+    rec.on_episode_start(
+        "s", "ep-stream", "test.fake", "1.0.0", 4, cfg,
+        make_state(base_state, 0), None,
+    )
+    for t in range(5):
+        rec.on_transition(
+            make_record(base_state, "ep-stream", t, terminated=(t == 4))
+        )
+    rec.on_episode_end("s", "ep-stream", True)
+    rec.close()
+    shard_dir = [
+        root for root, dirs, files in os.walk(cfg.spool_dir)
+        if "shard_manifest.json" in files
+    ][0]
+    rows = pq.read_table(os.path.join(shard_dir, "episodes.parquet")).to_pylist()
+    assert [r["episode_id"] for r in rows] == [
+        "ep-stream", "ep-stream-seg0001", "ep-stream-seg0002",
+    ]
+    assert [r["num_transitions"] for r in rows] == [2, 2, 1]
+    assert rows[0]["truncated"] is True
+    assert rows[-1]["terminated"] is True
+    ok, errors = validate_shard(shard_dir)
+    assert ok, errors
+
+
 def test_recorder_shard_rotation(base_state, tmp_path):
     """shard 满后自动封存并开启新 shard。"""
     cfg = RecordingConfig(spool_dir=str(tmp_path), frame_sample=CFG, shard_max_transitions=3)
@@ -506,7 +541,7 @@ def test_recorder_resolves_task_via_registry(base_state, tmp_path):
 def test_manifest_records_env_params(tmp_path, base_state):
     """shard manifest 必须带 env_params 快照。
 
-    没有它，一批数据里混着 thirst_rate=0.25 与 1.0 的 episode 是无法区分的：
+    没有它，一批数据里混着 thirst_rate=0.15 与 1.0 的 episode 是无法区分的：
     transition 结构完全相同，动力学却不同 → 训练出来的 world model 学到的是
     两套物理的平均值，而且事后无法筛分。
     """

@@ -58,6 +58,7 @@ class AsyncRecorder:
         task_adapter: Any = None,
         queue_maxsize: int = 1000,
         shard_max_transitions: Optional[int] = None,
+        segment_max_transitions: int = 500,
     ):
         self._config = recording_config or RecordingConfig()
         self._config.validate()
@@ -70,6 +71,9 @@ class AsyncRecorder:
         self._producer_id = producer_id
         self._attempt_id = attempt_id or uuid.uuid4().hex[:8]
         self._shard_max_transitions = shard_max_transitions or self._config.shard_max_transitions
+        # 一局可持续数万步；若等到终局才把整个 episode 交给 ShardWriter，
+        # states/frames 会无界堆在内存。分段只切录制产物，不切游戏 session。
+        self._segment_max_transitions = max(1, int(segment_max_transitions))
 
         # 后台线程状态
         self._lock = threading.Lock()
@@ -214,16 +218,52 @@ class AsyncRecorder:
             self._flush_current(truncated=True)
         config = recording_config or self._config
         adapter = self._resolve_adapter(task_id, task_version)
-        self._current = {
+        self._current = self._new_segment(
+            session_id=session_id,
+            source_episode_id=episode_id,
+            task_id=task_id or adapter.task_id,
+            task_version=task_version or adapter.version,
+            seed=int(seed),
+            config=config,
+            state=state,
+            frame=frame,
+            segment_index=0,
+            seen_tokens=set(),
+        )
+
+    def _new_segment(
+        self,
+        *,
+        session_id: str,
+        source_episode_id: str,
+        task_id: str,
+        task_version: str,
+        seed: int,
+        config: RecordingConfig,
+        state: Any,
+        frame: Optional[np.ndarray],
+        segment_index: int,
+        seen_tokens: set,
+    ) -> Dict[str, Any]:
+        """创建一个录制段。段间共享边界 state，游戏 session 从不中断。"""
+        # 首段保留原 episode_id，兼容既有数据和下游；续段才追加后缀。
+        episode_id = (
+            source_episode_id
+            if segment_index == 0
+            else f"{source_episode_id}-seg{segment_index:04d}"
+        )
+        acc: Dict[str, Any] = {
             "session_id": session_id,
+            "source_episode_id": source_episode_id,
             "episode_id": episode_id,
-            "task_id": task_id or adapter.task_id,
-            "task_version": task_version or adapter.version,
-            "seed": int(seed),
+            "segment_index": segment_index,
+            "task_id": task_id,
+            "task_version": task_version,
+            "seed": seed,
             "states": [state],
             "transitions": [],
             "frames": [],
-            "seen_tokens": set(),
+            "seen_tokens": seen_tokens,
             "terminated": False,
             "truncated": False,
             "config": config,
@@ -244,7 +284,12 @@ class AsyncRecorder:
                 terminated=False,
                 truncated=False,
             )
-            self._current["frames"].append(FrameEntry(rgb=np.asarray(frame), row=row))
+            # 续段沿用上一段边界 state 的 timestep，通常不为 0；对每个
+            # 独立 MP4 来说它仍然是该视频的首帧，必须显式标记为初始帧。
+            if segment_index > 0:
+                row["is_initial_frame"] = True
+            acc["frames"].append(FrameEntry(rgb=np.asarray(frame), row=row))
+        return acc
 
     def _video_id_for(self, episode_id: str) -> str:
         return f"ep{self._episode_counter:06d}"
@@ -298,13 +343,44 @@ class AsyncRecorder:
         if record.truncated:
             acc["truncated"] = True
 
+        # 流式封存：达到段上限立即写盘，并用本 transition 的后继 state
+        # 作为下一段 state[0]。这不会改变环境，也不会人为终止长程任务。
+        if (
+            len(acc["transitions"]) >= self._segment_max_transitions
+            and not record.terminated
+            and not record.truncated
+        ):
+            self._roll_segment(record.state, record.frame)
+
     def _on_end(self, session_id: str, episode_id: str, terminated: bool) -> None:
         acc = self._current
-        if acc is None or acc["episode_id"] != episode_id:
+        if acc is None or acc["source_episode_id"] != episode_id:
             return
         if terminated:
             acc["terminated"] = True
         self._flush_current(truncated=False)
+
+    def _roll_segment(self, state: Any, frame: Optional[np.ndarray]) -> None:
+        """封存当前录制段，并无缝开始下一段。"""
+        acc = self._current
+        if acc is None:
+            return
+        meta = {
+            "session_id": acc["session_id"],
+            "source_episode_id": acc["source_episode_id"],
+            "task_id": acc["task_id"],
+            "task_version": acc["task_version"],
+            "seed": acc["seed"],
+            "config": acc["config"],
+            "segment_index": int(acc["segment_index"]) + 1,
+            "seen_tokens": acc["seen_tokens"],
+        }
+        self._flush_current(truncated=True)
+        self._current = self._new_segment(
+            state=state,
+            frame=frame,
+            **meta,
+        )
 
     def _flush_current(self, truncated: bool) -> None:
         acc = self._current

@@ -188,15 +188,19 @@ def create_app(manager: Optional[SessionManager] = None) -> FastAPI:
         return Response(content=png, media_type="image/png")
 
     @app.get("/v1/sessions/{sid}/map")
-    def get_map(sid: str, floor: Optional[int] = None) -> JSONResponse:
-        """返回指定楼层（默认当前楼层）的完整方块网格与玩家位置。
+    def get_map(
+        sid: str, floor: Optional[int] = None, window_size: Optional[int] = None
+    ) -> JSONResponse:
+        """返回指定楼层（默认当前楼层）的方块网格与玩家位置。
 
-        供路径规划器读取全图：map 为 48×48 的 BlockType int 网格，
-        player_position 为 [x, y]，player_direction 为朝向动作 id。
+        未指定 ``window_size`` 时返回活动 48×48 网格；指定后服务端按需
+        拼接持久化区块（可大于活动窗口），并用 ``map_origin`` 标注绝对坐标。
+        ``player_position`` 为返回网格内坐标，``player_global_position`` 为
+        稳定绝对坐标。
         """
         actor = mgr.get(sid)
         try:
-            payload = actor.get_map(floor)
+            payload = actor.get_map(floor, window_size=window_size)
         except ValueError as e:  # noqa: BLE001
             return JSONResponse(
                 status_code=400,

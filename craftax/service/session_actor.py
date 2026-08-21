@@ -18,9 +18,11 @@ import warnings
 from typing import Any, Dict, Optional, Tuple
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 from craftax.contracts import (
+    DEFAULT_ENERGY_RATE,
     DEFAULT_THIRST_RATE,
     ActionSpec,
     NullRecorder,
@@ -32,6 +34,14 @@ from craftax.contracts import (
     new_episode_id,
 )
 from craftax.service.frame_encoder import encode_png
+from craftax.service.world_window import (
+    CHUNK_SIZE,
+    ChunkCoord,
+    WorldOrigin,
+    crop_window,
+    global_position,
+)
+from craftax.service.chunk_store import ChunkStore
 
 
 def env_params_to_dict(params: Any) -> Dict[str, Any]:
@@ -289,6 +299,7 @@ class SessionActor:
         max_timesteps: Optional[int] = None,
         god_mode: bool = False,
         thirst_rate: Optional[float] = None,
+        energy_rate: Optional[float] = None,
     ):
         self.session_id = session_id
         self.env_name = env_name
@@ -308,15 +319,19 @@ class SessionActor:
             self._params = self._params.replace(max_timesteps=int(max_timesteps))
         if god_mode:
             self._params = self._params.replace(god_mode=True)
-        # 口渴衰减：具身会话默认放缓（contracts.DEFAULT_THIRST_RATE），因为长程
+        # 口渴衰减：具身会话默认放缓（contracts.DEFAULT_THIRST_RATE=0.15），因为长程
         # 任务在原版速率下会被"找水"挤占；显式传 1.0 可恢复原版。EnvParams 本身
         # 的默认值不变，RL 基准不受影响。
         self.thirst_rate = float(
             DEFAULT_THIRST_RATE if thirst_rate is None else thirst_rate
         )
         self._params = self._params.replace(thirst_rate=self.thirst_rate)
+        self.energy_rate = float(
+            DEFAULT_ENERGY_RATE if energy_rate is None else energy_rate
+        )
+        self._params = self._params.replace(energy_rate=self.energy_rate)
         # 环境参数快照写进录制配置 → shard manifest（数据集自描述）。没有它，
-        # 一批数据里混着 thirst_rate 0.25 与 1.0 的 episode 无法区分：transition
+        # 一批数据里混着不同 thirst_rate 的 episode 无法区分：transition
         # 结构完全相同，动力学却不同。
         self._recording_cfg = dataclasses.replace(
             recording, env_params=env_params_to_dict(self._params)
@@ -335,6 +350,12 @@ class SessionActor:
         self._truncated: bool = False
         self._episode_id: str = ""
         self._seed: Optional[int] = None
+        # Host-side world coordinates.  The current backend starts at origin
+        # (0, 0); future streamed chunks will advance this origin while the
+        # JAX state keeps the same fixed-size active window.
+        self._world_origin = WorldOrigin()
+        self._floor_origins: Dict[int, WorldOrigin] = {0: self._world_origin}
+        self._chunk_store: Optional[ChunkStore] = None
 
         self._frames: Dict[int, np.ndarray] = {}
         self._snapshots: Dict[int, Snapshot] = {}
@@ -404,8 +425,13 @@ class SessionActor:
                 raise FrameNotFoundError(self.session_id, revision)
             return encode_png(rgb)
 
-    def get_map(self, floor: Optional[int] = None) -> Dict[str, Any]:
-        """返回指定楼层（默认当前楼层）的完整方块网格、玩家位置与实体状态。
+    def get_map(
+        self, floor: Optional[int] = None, window_size: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """返回指定楼层的地图窗口、玩家位置与实体状态。
+
+        ``window_size=None`` 保持兼容行为，返回当前固定活动地图；传入窗口
+        大小后只返回以玩家为中心的固定区域，并附带 ``map_origin`` 与绝对坐标。
 
         供规划器/demo 客户端读取全图；返回 host numpy/list,不做 JAX 编译。
         新增字段供技能链执行器使用：
@@ -423,8 +449,54 @@ class SessionActor:
             if not 0 <= floor < self._state.map.shape[0]:
                 raise ValueError(f"floor {floor} 越界（共 {self._state.map.shape[0]} 层）")
             state = self._state
-            host_map = jax.device_get(state.map[floor])
+            host_map = np.asarray(jax.device_get(state.map[floor]))
             pos = jax.device_get(state.player_position)
+            local_pos = [int(pos[0].item()), int(pos[1].item())]
+            returned_local_pos = list(local_pos)
+            origin = self._floor_origins.get(floor, WorldOrigin(floor=floor))
+            map_origin = [origin.x, origin.y]
+            local_map_origin = (0, 0)
+            if window_size is not None:
+                size = int(window_size)
+                # Persist the authoritative grid for *any* requested floor
+                # before stitching.  This keeps edits made by the JAX state
+                # authoritative while allowing the planner to ask for a
+                # larger target-floor window as well as the current floor.
+                if self._chunk_store is not None:
+                    self._chunk_store.merge_window(
+                        floor, origin.x, origin.y, host_map,
+                        np.asarray(jax.device_get(state.item_map[floor])),
+                    )
+                    if floor == level:
+                        center_global = global_position(origin, local_pos)
+                    else:
+                        # Non-current floors have no player anchor.  Center a
+                        # requested view on the remembered floor anchor's
+                        # 48x48 initial window; absolute coordinates remain
+                        # explicit in ``map_origin``.
+                        center_global = [
+                            origin.x + host_map.shape[0] // 2,
+                            origin.y + host_map.shape[1] // 2,
+                        ]
+                    start_x = center_global[0] - size // 2
+                    start_y = center_global[1] - size // 2
+                    host_map, _ = self._chunk_store.render_window(
+                        floor, start_x, start_y, size
+                    )
+                    local_map_origin = (start_x - origin.x, start_y - origin.y)
+                else:
+                    # Legacy/no-store path: crop the currently selected JAX
+                    # grid around the player (or its center on another floor).
+                    anchor = local_pos if floor == level else [
+                        host_map.shape[0] // 2, host_map.shape[1] // 2
+                    ]
+                    host_map, local_map_origin = crop_window(host_map, anchor, size)
+                if floor == level:
+                    returned_local_pos = [
+                        local_pos[0] - local_map_origin[0],
+                        local_pos[1] - local_map_origin[1],
+                    ]
+                map_origin = [origin.x + local_map_origin[0], origin.y + local_map_origin[1]]
             direction = int(np.asarray(state.player_direction).item())
 
             # 怪物坐标与掩码（本层）
@@ -436,17 +508,28 @@ class SessionActor:
                     continue
                 m_pos = jax.device_get(mob.position[floor])
                 m_mask = jax.device_get(mob.mask[floor])
+                positions = []
+                global_positions = []
+                visible_masks = []
                 mobs[key] = {
-                    "positions": [
-                        [int(p[0].item()), int(p[1].item())]
-                        for p in m_pos if p is not None
-                    ],
-                    "masks": [bool(x.item()) for x in m_mask],
+                    "positions": positions,
+                    "global_positions": global_positions,
+                    "masks": visible_masks,
                 }
+                for mob_index, p in enumerate(m_pos):
+                    point = [int(p[0].item()), int(p[1].item())]
+                    absolute = global_position(origin, point)
+                    local = [point[0] - local_map_origin[0], point[1] - local_map_origin[1]]
+                    if 0 <= local[0] < host_map.shape[0] and 0 <= local[1] < host_map.shape[1]:
+                        positions.append(local)
+                        global_positions.append(absolute)
+                        visible_masks.append(bool(m_mask[mob_index].item()))
 
             # 梯子与击杀数（本层）
             down = jax.device_get(state.down_ladders[floor])
             up = jax.device_get(state.up_ladders[floor])
+            ladder_down = [int(down[0].item()), int(down[1].item())]
+            ladder_up = [int(up[0].item()), int(up[1].item())]
             monsters_killed = int(
                 np.asarray(state.monsters_killed[floor]).item()
             )
@@ -455,22 +538,77 @@ class SessionActor:
             map_arr = np.asarray(host_map)
             from craftax.craftax.constants import BlockType
 
+            # ``host_map`` is already the map returned to the caller (the
+            # active 48x48 grid or the requested cropped/stitched window).
+            # Therefore chest coordinates are local to ``map_origin``.  The
+            # previous implementation subtracted ``local_map_origin`` a
+            # second time for a requested window and produced wrong/negative
+            # positions, which made the planner lose a locked chest target.
             chest_rows, chest_cols = np.where(map_arr == BlockType.CHEST.value)
             chest_positions = [
                 [int(x), int(y)] for x, y in zip(chest_rows, chest_cols)
             ]
+            chest_global_positions = [
+                [int(map_origin[0]) + p[0], int(map_origin[1]) + p[1]]
+                for p in chest_positions
+            ]
+            if window_size is not None and floor == level:
+                ladder_down = [
+                    ladder_down[0] - local_map_origin[0],
+                    ladder_down[1] - local_map_origin[1],
+                ]
+                ladder_up = [
+                    ladder_up[0] - local_map_origin[0],
+                    ladder_up[1] - local_map_origin[1],
+            ]
+            if self._chunk_store is not None:
+                center_x = (int(map_origin[0]) + host_map.shape[0] // 2) // CHUNK_SIZE
+                center_y = (int(map_origin[1]) + host_map.shape[1] // 2) // CHUNK_SIZE
 
+                for cx in range(center_x - 1, center_x + 2):
+                    for cy in range(center_y - 1, center_y + 2):
+                        self._chunk_store.get(ChunkCoord(floor, cx, cy))
+
+            # The player belongs to the current floor even when a caller asks
+            # for another floor's planning window.  Report that absolute
+            # position from the current world anchor; map tiles themselves are
+            # anchored by ``map_origin`` below.
+            global_pos = global_position(self._world_origin, local_pos)
+            # Positions of entities remain local to the returned window for
+            # backwards compatibility; absolute copies are provided alongside
+            # them for streamed-world planners.
             return {
                 "floor": floor,
                 "current_level": level,
                 "map": host_map.tolist(),
-                "player_position": [int(pos[0].item()), int(pos[1].item())],
+                "player_position": returned_local_pos,
+                "player_global_position": global_pos,
+                "map_origin": map_origin,
+                "world_origin": [origin.x, origin.y],
+                "world_origin_chunk": [origin.x // CHUNK_SIZE, origin.y // CHUNK_SIZE],
+                "chunk_size": CHUNK_SIZE,
+                "window_size": int(host_map.shape[0]),
+                "world_mode": "streamed_chunk_v1",
+                "world_seed": self._seed,
+                "chunk_store": "craftax_generator_with_offscreen_tick_v1",
+                "chunk_generator": "craftax_smoothworld_v1",
+                "loaded_chunks": [
+                    [c.floor, c.x, c.y]
+                    for c in (self._chunk_store.loaded() if self._chunk_store else ())
+                ],
                 "player_direction": direction,
                 "mob_positions": mobs,
-                "ladder_down": [int(down[0].item()), int(down[1].item())],
-                "ladder_up": [int(up[0].item()), int(up[1].item())],
+                "ladder_down": ladder_down,
+                "ladder_up": ladder_up,
+                "ladder_down_global": global_position(origin, [int(down[0].item()), int(down[1].item())]),
+                "ladder_up_global": global_position(origin, [int(up[0].item()), int(up[1].item())]),
+                "ladder_network": (
+                    self._chunk_store.ladders(floor)
+                    if self._chunk_store is not None else {"up": [], "down": []}
+                ),
                 "monsters_killed": monsters_killed,
                 "chest_positions": chest_positions,
+                "chest_global_positions": chest_global_positions,
             }
 
     def close(self) -> None:
@@ -499,6 +637,9 @@ class SessionActor:
         if seed is None:
             seed = int(np.random.randint(0, 2**31 - 1))
         self._seed = seed
+        self._world_origin = WorldOrigin()
+        self._floor_origins = {0: self._world_origin}
+        self._chunk_store = ChunkStore(seed)
         self._episode_id = new_episode_id(self.session_id)
 
         # 4. PRNG：split 后使用子 key，避免复用
@@ -509,6 +650,23 @@ class SessionActor:
         obs, state = self._env.reset(reset_key, self._params)
         host_state = jax.device_get(state)
         host_obs = jax.device_get(obs)
+        # Preserve the authoritative Craftax generator for the initial active
+        # world. Future chunks are generated lazily by ChunkStore, while this
+        # 48x48 window exactly matches the JAX reset state.
+        for floor_index in range(int(host_state.map.shape[0])):
+            self._chunk_store.hydrate_window(
+                floor_index,
+                0,
+                0,
+                np.asarray(host_state.map[floor_index]),
+                np.asarray(host_state.item_map[floor_index]),
+            )
+            self._chunk_store.register_ladders(
+                floor_index, "down", np.asarray(host_state.down_ladders[floor_index])
+            )
+            self._chunk_store.register_ladders(
+                floor_index, "up", np.asarray(host_state.up_ladders[floor_index])
+            )
 
         timestep = int(np.asarray(host_state.timestep).item())
         frame_rgb = self._render_frame(host_obs, state)
@@ -583,6 +741,8 @@ class SessionActor:
         if self._state is None:
             raise SessionTerminatedError(0, False, False)
 
+        stream_event = self._maybe_shift_active_window(action.id)
+
         # 4. JAX step
         key, step_key = jax.random.split(self._key)
         self._key = key
@@ -591,7 +751,21 @@ class SessionActor:
         )
         host_state = jax.device_get(state)
         host_obs = jax.device_get(obs)
+        current_level = int(np.asarray(host_state.player_level).item())
+        if current_level != self._world_origin.floor:
+            self._world_origin = self._floor_origins.setdefault(
+                current_level, WorldOrigin(floor=current_level)
+            )
+        if self._chunk_store is not None:
+            height, width = self._state.map.shape[-2:]
+            self._chunk_store.tick_offscreen(
+                current_level, self._world_origin.x, self._world_origin.y,
+                min(int(height), int(width)),
+            )
         host_info = _to_py(jax.device_get(info))
+        host_info.update(self._world_metadata(host_state))
+        if stream_event is not None:
+            host_info.update(stream_event)
         reward = float(np.asarray(reward).item())
 
         # 5. 终局判定：到达 max_timesteps 视为截断，其余视为终止
@@ -680,6 +854,214 @@ class SessionActor:
 
         return snap
 
+    def _world_metadata(self, host_state: Any) -> Dict[str, Any]:
+        """Stable absolute-coordinate metadata attached to every transition."""
+        origin = self._world_origin
+        pos = np.asarray(host_state.player_position)
+        absolute = global_position(origin, [int(pos[0]), int(pos[1])])
+        return {
+            "world_seed": self._seed,
+            "world_origin": [origin.x, origin.y],
+            "world_origin_chunk": [origin.x // CHUNK_SIZE, origin.y // CHUNK_SIZE],
+            "player_global_position": absolute,
+            "chunk_size": CHUNK_SIZE,
+        }
+
+    def _maybe_shift_active_window(self, action_id: int) -> Optional[Dict[str, Any]]:
+        """Move the fixed JAX window when a cardinal action crosses its edge."""
+        if self._state is None or self._chunk_store is None:
+            return None
+        from craftax.craftax.constants import Action, BlockType, SOLID_BLOCKS
+
+        deltas = {
+            int(Action.LEFT.value): (0, -1),
+            int(Action.RIGHT.value): (0, 1),
+            int(Action.UP.value): (-1, 0),
+            int(Action.DOWN.value): (1, 0),
+        }
+        delta = deltas.get(int(action_id))
+        if delta is None:
+            return None
+        level = int(np.asarray(self._state.player_level).item())
+        pos = np.asarray(self._state.player_position, dtype=np.int32)
+        height, width = self._state.map.shape[-2:]
+        next_pos = (int(pos[0]) + delta[0], int(pos[1]) + delta[1])
+        if 0 <= next_pos[0] < height and 0 <= next_pos[1] < width:
+            return None
+
+        # Crossing the active-window edge is a real movement, not merely a
+        # viewport refresh.  Check the deterministic destination chunk first;
+        # otherwise a blocked edge action could shift the window and let the
+        # player walk through a solid/water/lava tile that the native collision
+        # routine would have rejected.
+        global_row = int(self._world_origin.x) + next_pos[0]
+        global_col = int(self._world_origin.y) + next_pos[1]
+        destination_coord = ChunkCoord(
+            level, global_col // CHUNK_SIZE, global_row // CHUNK_SIZE
+        )
+        destination_chunk = self._chunk_store.get(destination_coord)
+        destination_tile = int(
+            destination_chunk.blocks[global_row % CHUNK_SIZE, global_col % CHUNK_SIZE]
+        )
+        if destination_tile in set(SOLID_BLOCKS) or destination_tile in (
+            BlockType.WATER.value, BlockType.LAVA.value
+        ):
+            return None
+
+        old_origin = self._world_origin
+        old_map = np.asarray(jax.device_get(self._state.map[level]))
+        old_items = np.asarray(jax.device_get(self._state.item_map[level]))
+        self._chunk_store.merge_window(
+            level, old_origin.x, old_origin.y, old_map, old_items
+        )
+        entity_arrays = {
+            name: {
+                field: np.asarray(
+                    jax.device_get(getattr(getattr(self._state, name), field)[level])
+                )
+                for field in ("position", "health", "mask", "attack_cooldown", "type_id")
+            }
+            for name in (
+                "melee_mobs", "ranged_mobs", "passive_mobs",
+                "mob_projectiles", "player_projectiles",
+            )
+        }
+        self._chunk_store.save_entities(level, old_origin.x, old_origin.y, entity_arrays)
+        new_x, new_y = old_origin.x, old_origin.y
+        if next_pos[0] < 0:
+            new_x -= CHUNK_SIZE
+        elif next_pos[0] >= height:
+            new_x += CHUNK_SIZE
+        if next_pos[1] < 0:
+            new_y -= CHUNK_SIZE
+        elif next_pos[1] >= width:
+            new_y += CHUNK_SIZE
+
+        window, item_window = self._chunk_store.render_window(level, new_x, new_y, height)
+        global_row = old_origin.x + int(pos[0])
+        global_col = old_origin.y + int(pos[1])
+        new_pos = jnp.asarray([global_row - new_x, global_col - new_y], dtype=jnp.int32)
+        # The player may land at offset 31 (a one-chunk shift), not at the
+        # window center.  The generated chunk owns this cell; never overwrite
+        # it with PATH here, otherwise merely refreshing the active window
+        # would mutate the absolute world's block type.  Craftax chunk
+        # generation keeps chunk borders traversable, so the handoff cell is
+        # already valid in the rendered window.
+        new_pos_host = [int(new_pos[0]), int(new_pos[1])]
+        new_map = self._state.map.at[level].set(jnp.asarray(window))
+        new_items = self._state.item_map.at[level].set(jnp.asarray(item_window))
+        translated = self._translate_active_entities(level, old_origin, new_x, new_y)
+        self._state = self._state.replace(
+            map=new_map,
+            item_map=new_items,
+            player_position=new_pos,
+            **translated,
+        )
+        self._world_origin = WorldOrigin(floor=level, x=new_x, y=new_y)
+        # ``get_map`` resolves the origin through ``_floor_origins``.  Keep
+        # that floor anchor in sync with every streamed shift; otherwise the
+        # next response would silently report stale absolute coordinates even
+        # though the JAX window had moved.
+        self._floor_origins[level] = self._world_origin
+        return {
+            "world_expanded": True,
+            "world_origin": [new_x, new_y],
+            "world_origin_chunk": [new_x // CHUNK_SIZE, new_y // CHUNK_SIZE],
+            "world_transition": {
+                "from_origin": [old_origin.x, old_origin.y],
+                "to_origin": [new_x, new_y],
+                "floor": level,
+            },
+        }
+
+    def _translate_active_entities(
+        self, level: int, old_origin: WorldOrigin, new_x: int, new_y: int
+    ) -> Dict[str, Any]:
+        """Translate host-window entity coordinates across a window shift.
+
+        Entities outside the new active window are masked out; their persistent
+        simulation will be reintroduced by the chunk/entity store in the next
+        streaming phase instead of leaving stale local coordinates in JAX.
+        """
+        state = self._state
+        delta_r = int(old_origin.x - new_x)
+        delta_c = int(old_origin.y - new_y)
+        height, width = state.map.shape[-2:]
+        updates: Dict[str, Any] = {}
+
+        def translate_mobs(name: str) -> None:
+            mob = getattr(state, name)
+            pos = mob.position
+            current = np.asarray(jax.device_get(pos[level]))
+            mask = np.asarray(jax.device_get(mob.mask[level])).copy()
+            moved = current.copy()
+            moved[:, 0] += delta_r
+            moved[:, 1] += delta_c
+            visible = (
+                (moved[:, 0] >= 0) & (moved[:, 0] < height)
+                & (moved[:, 1] >= 0) & (moved[:, 1] < width)
+            )
+            mask &= visible
+            updates[name] = mob.replace(
+                position=pos.at[level].set(jnp.asarray(moved)),
+                mask=mob.mask.at[level].set(jnp.asarray(mask)),
+            )
+
+        for name in (
+            "melee_mobs", "ranged_mobs", "passive_mobs",
+            "mob_projectiles", "player_projectiles",
+        ):
+            translate_mobs(name)
+            mob = updates[name]
+            records = self._chunk_store.load_entities(
+                level, new_x, new_y, height, name
+            )
+            # Replace the active-floor arrays with persisted records visible in
+            # the new window. Newly generated windows simply have no records;
+            # normal Craftax spawning will repopulate them on subsequent steps.
+            pos_arr = np.zeros_like(np.asarray(jax.device_get(mob.position[level])))
+            health_arr = np.zeros_like(np.asarray(jax.device_get(mob.health[level])))
+            mask_arr = np.zeros_like(np.asarray(jax.device_get(mob.mask[level])))
+            cooldown_arr = np.zeros_like(np.asarray(jax.device_get(mob.attack_cooldown[level])))
+            type_arr = np.zeros_like(np.asarray(jax.device_get(mob.type_id[level])))
+            for i, record in enumerate(records[: len(mask_arr)]):
+                pos_arr[i] = record["position"]
+                health_arr[i] = record["health"]
+                mask_arr[i] = True
+                cooldown_arr[i] = record["attack_cooldown"]
+                type_arr[i] = record["type_id"]
+            updates[name] = mob.replace(
+                position=mob.position.at[level].set(jnp.asarray(pos_arr)),
+                health=mob.health.at[level].set(jnp.asarray(health_arr)),
+                mask=mob.mask.at[level].set(jnp.asarray(mask_arr)),
+                attack_cooldown=mob.attack_cooldown.at[level].set(jnp.asarray(cooldown_arr)),
+                type_id=mob.type_id.at[level].set(jnp.asarray(type_arr)),
+            )
+
+        # mob_map is an occupancy cache used by spawning/collision logic; it
+        # must be rebuilt together with the translated entity arrays.
+        translated_map = np.zeros_like(np.asarray(jax.device_get(state.mob_map)))
+        for name in ("melee_mobs", "ranged_mobs", "passive_mobs"):
+            mob = updates[name]
+            positions = np.asarray(jax.device_get(mob.position[level]))
+            masks = np.asarray(jax.device_get(mob.mask[level]))
+            for p, alive in zip(positions, masks):
+                if bool(alive) and 0 <= int(p[0]) < height and 0 <= int(p[1]) < width:
+                    translated_map[level, int(p[0]), int(p[1])] = True
+        updates["mob_map"] = jnp.asarray(translated_map)
+
+        plants = np.asarray(jax.device_get(state.growing_plants_positions)).copy()
+        plant_mask = np.asarray(jax.device_get(state.growing_plants_mask)).copy()
+        plants[:, 0] += delta_r
+        plants[:, 1] += delta_c
+        plant_visible = (
+            (plants[:, 0] >= 0) & (plants[:, 0] < height)
+            & (plants[:, 1] >= 0) & (plants[:, 1] < width)
+        )
+        updates["growing_plants_positions"] = jnp.asarray(plants)
+        updates["growing_plants_mask"] = jnp.asarray(plant_mask & plant_visible)
+        return updates
+
     # -- 渲染 / 摘要 ---------------------------------------------------------
 
     def _render_frame(self, host_obs: Any, state: Any) -> np.ndarray:
@@ -734,6 +1116,7 @@ class SessionActor:
             "sword": int(np.asarray(inv.sword).item()),
             "bow": int(np.asarray(inv.bow).item()),
             "arrows": int(np.asarray(inv.arrows).item()),
+            "water": int(np.asarray(inv.water).item()),
             "torches": int(np.asarray(inv.torches).item()),
             "ruby": int(np.asarray(inv.ruby).item()),
             "sapphire": int(np.asarray(inv.sapphire).item()),

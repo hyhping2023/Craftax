@@ -93,6 +93,7 @@ def find_nearest_target(
     start: Tuple[int, int],
     target_types: Sequence[int],
     extra_blocked: Optional[Sequence[Tuple[int, int]]] = None,
+    excluded_targets: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
     """BFS 找最近目标方块。
 
@@ -106,6 +107,7 @@ def find_nearest_target(
     """
     target_set = set(target_types)
     blocked_extra = set(extra_blocked) if extra_blocked else set()
+    excluded = set(excluded_targets) if excluded_targets else set()
     h, w = map2d.shape[0], map2d.shape[1]
 
     def tile_at(pos: Tuple[int, int]) -> int:
@@ -116,7 +118,8 @@ def find_nearest_target(
     # 玩家起点的周围直接有目标方块（站在目标旁）
     for delta in ACTION_DELTA.values():
         adj = (start[0] + delta[0], start[1] + delta[1])
-        if 0 <= adj[0] < h and 0 <= adj[1] < w and tile_at(adj) in target_set:
+        if (0 <= adj[0] < h and 0 <= adj[1] < w
+                and tile_at(adj) in target_set and adj not in excluded):
             return adj, delta
 
     visited = {start}
@@ -129,7 +132,7 @@ def find_nearest_target(
                 continue
             if nxt in visited:
                 continue
-            if tile_at(nxt) in target_set:
+            if tile_at(nxt) in target_set and nxt not in excluded:
                 return nxt, (first_delta or delta)
             if blocked(tile_at(nxt)):
                 continue

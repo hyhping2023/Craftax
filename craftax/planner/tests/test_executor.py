@@ -18,14 +18,17 @@ from craftax.craftax.envs.craftax_symbolic_env import (  # noqa: E402
 )
 from craftax.planner.executor import (  # noqa: E402
     DO,
+    DOWN,
     LEVEL_UP_DEXTERITY,
     LEVEL_UP_STRENGTH,
+    LEFT,
     MAKE_WOOD_PICKAXE,
     NOOP,
     PLACE_TABLE,
     RIGHT,
     SLEEP,
     SkillChainExecutor,
+    UP,
 )
 
 
@@ -98,6 +101,7 @@ def _summary(hs):
             "sword": int(inv.sword),
             "bow": int(inv.bow),
             "arrows": int(inv.arrows),
+            "water": int(inv.water),
             "torches": int(inv.torches),
             "armour": [int(x) for x in inv.armour],
             "books": int(inv.books),
@@ -617,6 +621,42 @@ def test_floor_map_provider_counts_blocks():
     assert ex._floor_resource_count(2, [9]) == 0
 
 
+def test_collect_goal_lock_survives_window_refresh():
+    """边缘换窗后仍追踪同一绝对资源，不能改选新窗口里的同类方块。"""
+    from craftax.craftax.constants import BlockType
+
+    ex = SkillChainExecutor("native.collect_wood")
+    ex._mob_cells = set()
+    summary = {
+        "floor": 0,
+        "player_position": [4, 4],
+        "player_direction": RIGHT,
+        "inventory": {},
+        "achievements": [],
+    }
+    first_grid = np.full((9, 9), BlockType.PATH.value, dtype=np.int32)
+    first_grid[4, 8] = BlockType.TREE.value
+    first = {
+        "map": first_grid,
+        "map_origin": [100, 200],
+        "player_global_position": [104, 204],
+    }
+    assert ex._seek_and_do(first, summary, [BlockType.TREE.value]) == RIGHT
+    assert ex._goal_locks["collect:0:(5,)"] == (0, 104, 208)
+
+    # 窗口向右平移四格：玩家和树的局部坐标变了，但绝对坐标不变。
+    summary["player_position"] = [4, 0]
+    refreshed_grid = np.full((9, 9), BlockType.PATH.value, dtype=np.int32)
+    refreshed_grid[4, 4] = BlockType.TREE.value
+    refreshed = {
+        "map": refreshed_grid,
+        "map_origin": [100, 204],
+        "player_global_position": [104, 204],
+    }
+    assert ex._seek_and_do(refreshed, summary, [BlockType.TREE.value]) == RIGHT
+    assert ex._goal_locks["collect:0:(5,)"] == (0, 104, 208)
+
+
 def test_floor_can_restock_arrows_uses_cross_floor_map():
     """弹药可补性：MAKE_ARROW 要 1 木 + 1 石，地牢层没有树 → 不可补。
     有跨层地图就实测该层树/石，没有则按地形约定（只有 L0/L6 可能有木）。"""
@@ -692,12 +732,17 @@ def test_arrow_feedstock_carried_for_deeper_floors():
     assert ex_shallow._arrow_feedstock_target(2, summ) == 0
 
 
-def test_survival_restock_stops_at_base_reserve():
-    """生存层补箭只补到基础储备（8）：清层用的完整弹药预算由下楼路径负责。
-    否则地表持续刷怪 + 弓持续消耗使"补到 23 支"永远不满足——实测整局 1800 步
-    里 635 步在合成箭、一次没下楼。"""
+def test_survival_restock_targets_real_ammo_budget_and_yields_to_push_mode():
+    """补箭目标是战斗模型算出的真实弹药预算，不再截到 8 支。
+
+    旧设计把生存层的补给目标截到 BOW_ARROW_RESERVE，为的是压掉"整局 1800 步里
+    635 步在合成箭、一次没下楼"。但那限制的是目标而不是成本：8 支箭只够约 3 个
+    击杀，而下楼门要求清 8 只怪，于是执行器带着永远不够的弹药反复下楼送死。
+    现在"箭工厂"由推进优先模式兜——链推进预算一耗尽就关掉补箭。
+    （另一个方案是给补箭单独加步数窗口，8 局面板 A/B 实测为净负，见
+    _restock_active 的注释。）"""
     from craftax.planner.executor import (
-        BOW_ARROW_RESERVE,
+        CHAIN_PUSH_STEPS,
         CRAFT_TABLE_BLOCK,
         MAKE_ARROW,
     )
@@ -707,12 +752,152 @@ def test_survival_restock_stops_at_base_reserve():
     ex = SkillChainExecutor("native.enter_gnomish_mines")
     ex._restock_target = 23        # 下楼路径算出的清层预算
     payload = _fake_payload(map2d=map2d)
-    # 已达基础储备 → 不再为补箭停留
-    full = _fake_summary(inventory={"arrows": BOW_ARROW_RESERVE, "wood": 5, "stone": 5})
-    assert ex._survival_action(payload, full) != MAKE_ARROW
-    # 低于基础储备 → 仍然补（0-1 箭等于待宰）
-    low = _fake_summary(inventory={"arrows": 2, "wood": 5, "stone": 5})
-    assert ex._survival_action(payload, low) == MAKE_ARROW
+    summ = _fake_summary(inventory={"arrows": 8, "wood": 5, "stone": 5})
+    # 8 支远低于真实预算 23 → 现在会补（旧设计在这里就停手了）
+    assert ex._survival_action(payload, summ) == MAKE_ARROW
+    # 已达目标 → 不补
+    ex2 = SkillChainExecutor("native.enter_gnomish_mines")
+    ex2._restock_target = 23
+    stocked = _fake_summary(inventory={"arrows": 23, "wood": 5, "stone": 5})
+    assert ex2._survival_action(payload, stocked) != MAKE_ARROW
+    # 链推进预算耗尽 → 停止补箭，让位给推进
+    ex3 = SkillChainExecutor("native.enter_gnomish_mines")
+    ex3._restock_target = 23
+    for _ in range(CHAIN_PUSH_STEPS + 1):
+        ex3._update_chain_progress(summ)
+    assert ex3._push_now()
+    assert ex3._survival_action(payload, summ) != MAKE_ARROW
+
+
+def test_push_mode_engages_after_chain_stalls_and_stops_optional_holds():
+    """链推进预算：位置/背包一直在变但楼层与子目标不动 → 进推进优先模式。
+
+    普通停滞检测的签名含位置与背包，"在浅层来回走着采集"每步都算有进展
+    （实测 1615 步里 1539 步在 L0，而 _stall_steps 从未累积）。这里的预算只看
+    (楼层, chain_idx, 成就数)。"""
+    from craftax.planner.executor import CHAIN_PUSH_STEPS, PUSH_MAX_STEPS
+
+    ex = SkillChainExecutor("native.reach_floor_3")
+    # 每步都换位置、每步都多一根木头 —— 旧签名会认为一直有进展
+    # +1：首次观测只是记下签名（计数 0），此后每步无推进才累加
+    for i in range(CHAIN_PUSH_STEPS + 1):
+        ex._update_chain_progress(
+            _fake_summary(player_position=[24, 24 + (i % 5)], inventory={"wood": i})
+        )
+    assert ex._push_now()
+    # 推进优先模式下不再进入回血 / 夜间驻守 / 补箭
+    assert ex._regen_mode_active(2.0) is False
+    assert ex._night_hold_active(_fake_summary(health=2.0, timestep=180)) is False
+    assert ex._restock_active() is False
+    # 楼层推进 → 预算清零、结束推进窗口
+    ex._update_chain_progress(_fake_summary(floor=1))
+    assert not ex._push_now()
+
+    # 推进优先是**脉冲**而非常开：窗口最多 PUSH_MAX_STEPS 步，之后进冷却，
+    # 让恢复类行为重新可用（否则深挖类任务会在几千步里全程无法回血）。
+    ex2 = SkillChainExecutor("native.reach_floor_3")
+    for _ in range(CHAIN_PUSH_STEPS + 1):
+        ex2._update_chain_progress(_fake_summary())
+    assert ex2._push_now()
+    for _ in range(PUSH_MAX_STEPS):
+        ex2._update_chain_progress(_fake_summary())
+    assert not ex2._push_now(), "推进窗口必须有步数上限"
+    assert ex2._push_cooldown > 0
+    assert ex2._regen_mode_active(2.0) is True, "冷却期内恢复行为必须恢复可用"
+
+
+def test_regen_budget_counts_sleep_steps_and_cools_down_after_normal_exit():
+    """回血预算必须计入睡眠步数，且正常退出也要冷却。
+
+    两个原实现缺陷：(1) `_survival_action` 在睡眠时早退，走不到
+    `_regen_steps += 1`，于是 68 步的睡眠只消耗 0 预算；(2) 冷却只在预算耗尽
+    时设置，正常回满退出不设 → "下楼→挨打→回血→下楼"的循环次数无上限。"""
+    payload = _fake_payload()
+    ex = SkillChainExecutor("native.reach_floor_3")
+    assert ex._regen_mode_active(2.0) is True          # 进入回血模式
+    before = ex._regen_steps
+    ex._survival_action(payload, _fake_summary(health=2.0, is_sleeping=True))
+    assert ex._regen_steps == before + 1, "睡眠步数必须计入回血预算"
+    # 回满到 REGEN_EXIT_HEALTH 后正常退出 → 设冷却，限制再次进入的频率
+    assert ex._regen_mode_active(SkillChainExecutor.REGEN_EXIT_HEALTH) is False
+    assert ex._regen_cooldown == SkillChainExecutor.REGEN_EXIT_COOLDOWN_STEPS
+    assert ex._regen_mode_active(2.0) is False, "冷却期内不得立刻再次进入回血"
+
+
+def test_progress_latch_keeps_descend_path_through_small_health_dips():
+    """推进门的滞回：一旦开始推进，血量小幅回落不再把控制权交回生存维护。
+
+    旧实现是裸阈值 health>=6：地表刷怪使血量在 6 附近震荡时整条下楼路径被
+    无限期关闭（实测"下楼→挨打→回地表恢复"占一局 53% 步数）。"""
+    ex = SkillChainExecutor("native.reach_floor_3")
+    assert ex._safe_to_progress(_fake_summary(health=6.0)) is True
+    assert ex._safe_to_progress(_fake_summary(health=5.0)) is True   # 小幅回落仍推进
+    assert ex._safe_to_progress(_fake_summary(health=3.5)) is False  # 真正见底才交还
+    # 交还后需重新达到进入门槛才再推进
+    assert ex._safe_to_progress(_fake_summary(health=5.0)) is False
+    assert ex._safe_to_progress(_fake_summary(health=6.0)) is True
+    # 某项 vital 见底同样交还控制权（缺水/缺食由生存维护跨层处理）
+    assert ex._safe_to_progress(_fake_summary(health=9.0, drink=0.0)) is False
+
+
+def test_arrow_feedstock_carries_stone_as_well_as_wood():
+    """MAKE_ARROW = 1 木 + 1 石 → 只带木等于深层一支箭也做不出。
+
+    实测三次下楼时背包都是 8 木 + 0 石，弓在 L1 打空后彻底失去补给能力。"""
+    ex = SkillChainExecutor("native.reach_floor_3")   # 需穿过 L1、L2
+    summ = _fake_summary(floor=0, inventory={"bow": 1, "arrows": 30, "wood": 0})
+    crafts = ex._arrow_feedstock_crafts(1, summ)
+    wood = ex._arrow_feedstock_target(1, summ)
+    stone = ex._arrow_feedstock_stone_target(1, summ)
+    cap = SkillChainExecutor.ARROW_FEEDSTOCK_CAP
+    assert crafts > 0 and wood > 0 and stone > 0
+    assert stone == min(cap, crafts)
+    assert wood == min(cap, crafts + 2)     # 木多留 2 个给深层放工作台
+    assert stone <= wood
+    # 下一层就是最深层（不再有过路层）→ 两种料都不必带
+    ex_shallow = SkillChainExecutor("native.enter_gnomish_mines")
+    assert ex_shallow._arrow_feedstock_target(2, summ) == 0
+    assert ex_shallow._arrow_feedstock_stone_target(2, summ) == 0
+
+
+def test_descend_requires_arrow_reserve_before_crossing_another_floor():
+    """弹药门：还要穿过下一层继续下潜时，不许带着 2 支箭下楼。
+
+    实测两局都是带 2 支箭下 L1、箭尽后被近战打死（其中一局回地表补 2 支又下去，
+    仍死在 L1）。prep 的 arrows_min 是均值档（很小），2 支就能满足 → 旧路径直接
+    放行；这道门把下限提到 BOW_ARROW_RESERVE。"""
+    from craftax.planner.executor import (
+        BOW_ARROW_RESERVE,
+        CRAFT_TABLE_BLOCK,
+        MAKE_ARROW,
+    )
+
+    map2d = np.full((16, 16), 2, dtype=np.int32)
+    map2d[12, 12] = CRAFT_TABLE_BLOCK       # 工作台就在玩家旁边
+    payload = _fake_payload(map2d=map2d, ladder_down=(15, 15), monsters_killed=10)
+    # L1 已清怪、装备阶梯已满足（剑 3/镐 2）→ 只差弹药
+    inv = {"sword": 3, "pickaxe": 2, "bow": 1, "wood": 6, "stone": 6}
+    summ = _fake_summary(floor=1, player_position=[12, 13],
+                         inventory=dict(inv, arrows=2))
+    ex = SkillChainExecutor("native.reach_floor_3")   # max_floor=3 → 还要穿过 L2
+    assert ex._descend_to(payload, summ, 2) == MAKE_ARROW
+
+    # 备到基础储备后不再为箭停留
+    stocked = _fake_summary(floor=1, player_position=[12, 13],
+                            inventory=dict(inv, arrows=BOW_ARROW_RESERVE))
+    ex2 = SkillChainExecutor("native.reach_floor_3")
+    assert ex2._descend_to(payload, stocked, 2) != MAKE_ARROW
+
+    # 下一层就是最终目标层（只需到达，不清怪）→ 这道门不阻塞下楼
+    ex3 = SkillChainExecutor("native.enter_gnomish_mines")   # max_floor=2
+    assert ex3._descend_to(payload, summ, 2) != MAKE_ARROW
+
+    # 逃逸：地牢层没有树，木料耗尽 → 造不出箭就必须放行，
+    # 否则玩家会被一直推回工作台空转（旧版 635 步都在"合成箭"）。
+    dry = _fake_summary(floor=1, player_position=[12, 13],
+                        inventory=dict(inv, arrows=2, wood=0))
+    ex4 = SkillChainExecutor("native.reach_floor_3")
+    assert ex4._descend_to(payload, dry, 2) != MAKE_ARROW
 
 
 def test_defeat_mob_locations_match_game_constants():
@@ -988,6 +1173,37 @@ def test_thirst_rate_slows_water_decay_in_env():
     assert abs((9.0 - slowed) - (9.0 - vanilla) / 4) <= 1.0
 
 
+def test_energy_rate_slows_natural_decay_in_env():
+    """具身 energy_rate=0.25 时，清醒精力自然消耗约为原版四分之一。"""
+    from craftax.craftax.constants import Action
+
+    def energy_after(steps: int, energy_rate: float) -> float:
+        env = CraftaxSymbolicEnvNoAutoReset()
+        params = EnvParams(energy_rate=energy_rate)
+        state = env.reset(jax.random.PRNGKey(2026), params)[1]
+        key = jax.random.PRNGKey(7)
+        for _ in range(steps):
+            key, sub = jax.random.split(key)
+            _o, state, _r, _d, _i = env.step(sub, state, Action.NOOP.value, params)
+        return float(_host(state).player_energy)
+
+    vanilla = energy_after(120, 1.0)
+    slowed = energy_after(120, 0.25)
+    assert slowed > vanilla
+    assert abs((9.0 - slowed) - (9.0 - vanilla) / 4) <= 1.0
+
+
+def test_sleep_can_heal_in_a_safe_shelter_even_at_full_energy():
+    """SLEEP 不再只为回能量，也可在安全掩体中快速回血。"""
+    map2d = np.full((12, 12), 4, dtype=np.int32)
+    for cell in ((5, 5), (5, 6), (5, 7)):
+        map2d[cell] = 2
+    payload = _fake_payload(map2d=map2d)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(player_position=[5, 5], health=5.0, energy=9.0)
+    assert ex._wait_action(summ, payload) == SLEEP
+
+
 def test_executor_projections_follow_session_thirst_rate():
     """执行器的睡眠投影必须用会话的 thirst_rate：否则把水调慢后仍按原版投影，
     会拒绝本来安全的睡眠（"渴着睡"的保护变成"永远不睡"）。"""
@@ -1042,6 +1258,34 @@ def test_idle_does_not_mine_away_own_shelter():
     assert ex._idle_action(payload, open_field) == DO
 
 
+def test_stall_guard_breaks_repeated_idle_do_and_attacks_adjacent_mob():
+    """等待动作也必须经过停滞看门狗，近身怪优先转向/攻击。"""
+    map2d = np.full((48, 48), 2, dtype=np.int32)
+    map2d[24, 25] = 3  # 面朝水时旧逻辑会无限返回 DO
+    payload = _fake_payload(map2d=map2d)
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    summ = _fake_summary(player_position=[24, 24], player_direction=RIGHT, health=9.0)
+    ex._stall_steps = 4
+    escaped = ex._guard_stall(DO, payload, summ)
+    assert escaped in (LEFT, RIGHT, UP, DOWN)
+
+    # A planner movement must not be rewritten as DO merely because water is
+    # adjacent.  That was the shore starvation loop seen in the demo.
+    ex._stall_steps = 2
+    assert ex._guard_stall(UP, payload, summ) == UP
+
+    mobs = {
+        "melee": {"positions": [[25, 24]], "masks": [True]},
+        "ranged": {"positions": [], "masks": []},
+        "passive": {"positions": [], "masks": []},
+    }
+    ex._stall_steps = 2
+    attack = ex._guard_stall(
+        DO, _fake_payload(map2d=map2d, mobs=mobs), summ
+    )
+    assert attack == DOWN  # 先转向南侧相邻的近战怪
+
+
 def test_ambush_holds_the_pocket_instead_of_chasing():
     """清怪层 + 坑位 + 有弓 → 守住开口不追击：怪 75% 概率自己走过来，
     走出去追等于把"只有一个开口"的优势还回去（每次接战固定挨一次首击）。"""
@@ -1081,3 +1325,102 @@ def test_low_energy_does_not_gamble_on_open_field_sleep():
     # 同样能量、但怪在 14 格外（会消失）→ 照常睡
     far = {**mobs, "melee": {"positions": [[44, 24]], "masks": [True]}}
     assert ex._survival_action(_fake_payload(map2d=map2d, mobs=far), summ) == SLEEP
+
+
+def test_planner_strikes_at_sword_reach_instead_of_closing_in():
+    """持剑时正前方两格的怪要**直接打**，不能走近再打。
+
+    走到相邻格必然先吃怪的一次首击（怪刷新即冷却<=0），而两格外它打不到我们——
+    这正是 game_logic.do_action 里 sword_reach 的全部价值。旧实现的
+    DELTA_TO_ACTION 只有 4 个单位偏移，两格外的怪一律走近，等于把射程收益还回去。
+    """
+    from craftax.planner.executor import SWORD_REACH
+
+    map2d = np.full((48, 48), 2, dtype=np.int32)   # 全草地：视线通透
+    pos = [24, 24]
+    two_ahead = [24, 24 + SWORD_REACH]             # 正前方（RIGHT）两格
+    mobs = {
+        "melee": {"positions": [two_ahead], "masks": [True]},
+        "ranged": {"positions": [], "masks": []},
+        "passive": {"positions": [], "masks": []},
+    }
+    payload = _fake_payload(map2d=map2d, mobs=mobs)
+    armed = _fake_summary(player_position=pos, player_direction=RIGHT,
+                          inventory={"sword": 1, "bow": 0, "arrows": 0})
+    # 已朝向目标 → 直接 DO
+    assert SkillChainExecutor._adjacent_hostile_action(payload, armed) == DO
+    ex = SkillChainExecutor("native.enter_gnomish_mines")
+    ex._mob_cells = set()
+    assert ex._combat_any(payload, armed) == DO
+
+    # 没朝向 → 先转身，而不是走过去
+    facing_away = _fake_summary(player_position=pos, player_direction=LEFT,
+                                inventory={"sword": 1, "bow": 0, "arrows": 0})
+    assert SkillChainExecutor._adjacent_hostile_action(payload, facing_away) == RIGHT
+
+    # 无剑 → 两格打不到，退回原来的"走近"行为
+    unarmed = _fake_summary(player_position=pos, player_direction=RIGHT,
+                            inventory={"sword": 0, "bow": 0, "arrows": 0})
+    assert SkillChainExecutor._adjacent_hostile_action(payload, unarmed) is None
+
+    # 中间格是实心方块 → 打不到（与游戏侧的视线门一致），不要白转身
+    walled = np.array(map2d)
+    walled[24, 25] = 4                              # STONE 挡在中间
+    blocked_payload = _fake_payload(map2d=walled, mobs=mobs)
+    assert SkillChainExecutor._adjacent_hostile_action(blocked_payload, armed) is None
+
+    # 斜向两格不在射程内（游戏只判正前方第二格）
+    diag = {**mobs, "melee": {"positions": [[25, 25]], "masks": [True]}}
+    diag_payload = _fake_payload(map2d=map2d, mobs=diag)
+    assert SkillChainExecutor._adjacent_hostile_action(diag_payload, armed) is None
+
+    # 贴脸的怪优先于两格外的（这一回合它就会打到我们）
+    both = {**mobs, "melee": {"positions": [two_ahead, [24, 23]], "masks": [True, True]}}
+    both_payload = _fake_payload(map2d=map2d, mobs=both)
+    assert SkillChainExecutor._adjacent_hostile_action(both_payload, armed) == LEFT
+
+
+def test_sword_reach_needs_line_of_sight_in_env():
+    """游戏侧：两格攻击必须要求中间格通透。
+
+    attack_mob 只按位置精确相等匹配怪、不看地形，没有视线门时剑会穿墙命中——
+    地牢里等于隔墙单方面打怪（怪的近战判定要求相邻），是个白给的无敌位。
+    """
+    from craftax.craftax.constants import Action, BlockType
+
+    def hit_far_mob(*, wall_between: bool, sword: int) -> float:
+        env = CraftaxSymbolicEnvNoAutoReset()
+        params = EnvParams()
+        state = env.reset(jax.random.PRNGKey(2026), params)[1]
+        level = int(_host(state).player_level)
+        pos = np.asarray(_host(state).player_position)
+        target = (int(pos[0]), int(pos[1]) + 2)
+        mid = (int(pos[0]), int(pos[1]) + 1)
+        # 把一只近战怪放到正前方两格，中间格按需设成石头或路
+        mobs = state.melee_mobs
+        state = state.replace(
+            player_direction=jax.numpy.asarray(Action.RIGHT.value, dtype=jax.numpy.int32),
+            inventory=state.inventory.replace(
+                sword=jax.numpy.asarray(sword, dtype=jax.numpy.int32)
+            ),
+            melee_mobs=mobs.replace(
+                position=mobs.position.at[level, 0].set(
+                    jax.numpy.asarray(target, dtype=jax.numpy.int32)
+                ),
+                health=mobs.health.at[level, 0].set(jax.numpy.asarray(20.0)),
+                mask=mobs.mask.at[level, 0].set(True),
+                type_id=mobs.type_id.at[level, 0].set(jax.numpy.asarray(0, dtype=jax.numpy.int32)),
+            ),
+            map=state.map.at[level, mid[0], mid[1]].set(
+                BlockType.STONE.value if wall_between else BlockType.PATH.value
+            ),
+        )
+        before = float(_host(state).melee_mobs.health[level, 0])
+        _o, state, _r, _d, _i = env.step(
+            jax.random.PRNGKey(7), state, Action.DO.value, params
+        )
+        return before - float(_host(state).melee_mobs.health[level, 0])
+
+    assert hit_far_mob(wall_between=False, sword=1) > 0, "通透时两格应能命中"
+    assert hit_far_mob(wall_between=True, sword=1) == 0, "隔墙不得命中"
+    assert hit_far_mob(wall_between=False, sword=0) == 0, "无剑不得有两格射程"

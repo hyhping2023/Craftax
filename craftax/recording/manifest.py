@@ -143,7 +143,7 @@ def build_shard_manifest(
         },
         "state_schema_hash": state_schema_hash,
         "frame_sample": frame_sample or {},
-        # 环境参数快照：动力学不同的数据不能混用（如 thirst_rate 0.25 vs 1.0）
+        # 环境参数快照：动力学不同的数据不能混用（如 thirst_rate 0.15 vs 1.0）
         "env_params": env_params or {},
         "counts": counts or {},
         "arrays": _inspect_zarr_arrays(shard_dir),
